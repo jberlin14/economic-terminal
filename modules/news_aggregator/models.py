@@ -24,6 +24,12 @@ class NewsArticle(BaseModel):
     category: str = Field(default='GENERAL', description="Category (ECON, FX, POLITICAL, etc)")
     severity: str = Field(default='LOW', description="Severity (CRITICAL, HIGH, MEDIUM, LOW)")
 
+    # Leader and event detection (NEW)
+    leader_mentions: List[str] = Field(default_factory=list, description="Detected leader keys")
+    institutions: List[str] = Field(default_factory=list, description="Detected institutions")
+    event_types: List[str] = Field(default_factory=list, description="Detected event types")
+    action_words: List[str] = Field(default_factory=list, description="Detected action words")
+
     # Optional content
     summary: Optional[str] = Field(None, description="Article summary")
     full_text: Optional[str] = Field(None, description="Full article text")

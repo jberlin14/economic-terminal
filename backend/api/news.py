@@ -9,6 +9,8 @@ from sqlalchemy.orm import Session
 
 from modules.data_storage.database import get_db
 from modules.data_storage.queries import QueryHelper
+from modules.news_aggregator.search import NewsSearch
+from modules.news_aggregator.leader_detector import LeaderDetector
 
 router = APIRouter()
 
@@ -16,8 +18,8 @@ router = APIRouter()
 @router.get("/recent")
 async def get_recent_news(
     hours: int = Query(default=24, ge=1, le=168),
-    severity: Optional[str] = Query(default=None, regex="^(CRITICAL|HIGH|MEDIUM|LOW)$"),
-    category: Optional[str] = Query(default=None, regex="^(ECON|FX|POLITICAL|CREDIT|CAT)$"),
+    severity: Optional[str] = Query(default=None, pattern="^(CRITICAL|HIGH|MEDIUM|LOW)$"),
+    category: Optional[str] = Query(default=None, pattern="^(ECON|FX|POLITICAL|CREDIT|CENTRAL_BANK|GEOPOLITICAL|GENERAL)$"),
     limit: int = Query(default=50, ge=1, le=200),
     db: Session = Depends(get_db)
 ):

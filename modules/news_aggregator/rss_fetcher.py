@@ -17,9 +17,11 @@ except ImportError:
     logger.warning("feedparser not installed. Run: pip install feedparser")
 
 from .models import NewsArticle, NewsFeed
+from .leader_detector import LeaderDetector
+from .config import RSS_FEEDS as CONFIGURED_RSS_FEEDS
 
 
-# RSS Feed sources (no API key required)
+# RSS Feed sources (no API key required) - DEPRECATED, use config.py
 RSS_FEEDS = {
     'bloomberg': 'https://feeds.bloomberg.com/markets/news.rss',
     'cnbc': 'https://www.cnbc.com/id/20910258/device/rss/rss.html',
@@ -73,6 +75,7 @@ class RSSFetcher:
     def __init__(self):
         if not FEEDPARSER_AVAILABLE:
             logger.error("feedparser package not installed")
+        self.detector = LeaderDetector()
 
     def fetch_feed(self, source: str, url: str, max_articles: int = 20) -> Optional[NewsFeed]:
         """
@@ -143,22 +146,33 @@ class RSSFetcher:
             if summary:
                 summary = self._clean_html(summary)
 
-            # Tag article
-            country_tags = self._tag_countries(headline, summary)
-            category = self._tag_category(headline, summary)
-            severity = self._tag_severity(headline, summary)
+            # Perform comprehensive analysis using leader detector
+            analysis = self.detector.analyze_article(headline, summary)
+
+            # Tag article (keep existing methods for backward compatibility)
+            country_tags_legacy = self._tag_countries(headline, summary)
+            category_legacy = self._tag_category(headline, summary)
             keyword_matches = self._extract_keywords(headline, summary)
+
+            # Merge analysis with legacy tags
+            all_country_tags = list(set(country_tags_legacy + analysis['countries']))
+            all_actions = analysis['actions']['critical'] + analysis['actions']['high']
 
             article = NewsArticle(
                 headline=headline,
                 source=source,
                 url=url,
                 published_at=published_at,
-                country_tags=country_tags,
-                category=category,
-                severity=severity,
-                summary=summary[:500] if summary else None,  # Limit summary length
-                keyword_matches=keyword_matches
+                country_tags=all_country_tags,
+                category=analysis.get('events', [category_legacy])[0] if analysis.get('events') else category_legacy,
+                severity=analysis['severity'],
+                summary=summary[:500] if summary else None,
+                keyword_matches=keyword_matches,
+                # New fields from leader detection
+                leader_mentions=analysis['leader_keys'],
+                institutions=analysis['institutions'],
+                event_types=analysis['events'],
+                action_words=all_actions
             )
 
             return article

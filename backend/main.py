@@ -29,7 +29,7 @@ from modules.data_storage.database import get_db, init_db, check_connection
 from modules.data_storage.queries import QueryHelper
 
 # Import API routers
-from backend.api import fx, yields, credit, news, risks, health
+from backend.api import fx, yields, credit, news, risks, health, news_advanced
 
 # Import scheduler
 from backend.scheduler import start_scheduler, stop_scheduler
@@ -91,6 +91,7 @@ app.include_router(fx.router, prefix="/api/fx", tags=["FX Rates"])
 app.include_router(yields.router, prefix="/api/yields", tags=["Yields"])
 app.include_router(credit.router, prefix="/api/credit", tags=["Credit"])
 app.include_router(news.router, prefix="/api/news", tags=["News"])
+app.include_router(news_advanced.router, prefix="/api/news", tags=["News Advanced"])
 app.include_router(risks.router, prefix="/api/risks", tags=["Risk Alerts"])
 
 

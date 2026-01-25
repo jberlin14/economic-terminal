@@ -63,6 +63,11 @@ class NewsStorage:
                 summary=article.summary,
                 relevance_score=article.relevance_score,
                 keyword_matches=article.keyword_matches,
+                # New fields from leader detection
+                leader_mentions=article.leader_mentions,
+                institutions=article.institutions,
+                event_types=article.event_types,
+                action_words=article.action_words,
                 processed=False,
                 alert_generated=False
             )
