@@ -10,6 +10,10 @@ interface NewsArticle {
   country_tags: string[];
   category: string;
   severity: string;
+  leader_mentions?: string[];
+  institutions?: string[];
+  event_types?: string[];
+  action_words?: string[];
 }
 
 interface NewsFeedProps {
@@ -36,6 +40,10 @@ export const NewsFeed: React.FC<NewsFeedProps> = ({ articles }) => {
       case 'FX': return 'text-chart-purple';
       case 'POLITICAL': return 'text-chart-pink';
       case 'CREDIT': return 'text-chart-cyan';
+      case 'CENTRAL_BANK': return 'text-chart-blue';
+      case 'GEOPOLITICAL': return 'text-critical';
+      case 'TRADE_POLICY': return 'text-warning';
+      case 'CURRENCY': return 'text-chart-purple';
       case 'CAT': return 'text-critical';
       default: return 'text-terminal-text-dim';
     }
@@ -119,13 +127,68 @@ export const NewsFeed: React.FC<NewsFeedProps> = ({ articles }) => {
                 {article.country_tags && article.country_tags.length > 0 && (
                   <div className="flex gap-1 mt-2">
                     {article.country_tags.map((tag) => (
-                      <span 
+                      <span
                         key={tag}
                         className="px-1.5 py-0.5 bg-terminal-border rounded text-xs"
                       >
                         {tag}
                       </span>
                     ))}
+                  </div>
+                )}
+
+                {/* Leader Mentions, Institutions, and Events */}
+                {((article.leader_mentions && article.leader_mentions.length > 0) ||
+                  (article.institutions && article.institutions.length > 0) ||
+                  (article.event_types && article.event_types.length > 0)) && (
+                  <div className="flex gap-2 mt-2 flex-wrap text-xs">
+                    {/* Leader Mentions */}
+                    {article.leader_mentions && article.leader_mentions.length > 0 && (
+                      <div className="flex gap-1 items-center">
+                        <span className="text-terminal-text-dim">👤</span>
+                        {article.leader_mentions.slice(0, 3).map((leader) => (
+                          <span
+                            key={leader}
+                            className="px-1.5 py-0.5 bg-chart-purple/20 text-chart-purple rounded text-xs"
+                          >
+                            {leader.toUpperCase()}
+                          </span>
+                        ))}
+                        {article.leader_mentions.length > 3 && (
+                          <span className="text-terminal-text-dim">+{article.leader_mentions.length - 3}</span>
+                        )}
+                      </div>
+                    )}
+
+                    {/* Institutions */}
+                    {article.institutions && article.institutions.length > 0 && (
+                      <div className="flex gap-1 items-center">
+                        <span className="text-terminal-text-dim">🏛️</span>
+                        {article.institutions.slice(0, 2).map((inst) => (
+                          <span
+                            key={inst}
+                            className="px-1.5 py-0.5 bg-chart-blue/20 text-chart-blue rounded text-xs"
+                          >
+                            {inst}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Event Types */}
+                    {article.event_types && article.event_types.length > 0 && (
+                      <div className="flex gap-1 items-center">
+                        <span className="text-terminal-text-dim">📌</span>
+                        {article.event_types.slice(0, 2).map((event) => (
+                          <span
+                            key={event}
+                            className="px-1.5 py-0.5 bg-chart-cyan/20 text-chart-cyan rounded text-xs"
+                          >
+                            {event.replace('_', ' ')}
+                          </span>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 )}
               </div>

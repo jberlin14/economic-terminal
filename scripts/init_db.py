@@ -43,11 +43,11 @@ def main():
         
         # Check connection first
         if not check_connection():
-            print("❌ Database connection failed!")
+            print("[ERROR] Database connection failed!")
             print("   Check your DATABASE_URL in .env file")
             return 1
-        
-        print("✓ Database connection successful")
+
+        print("[OK] Database connection successful")
         
         # Create tables
         init_db()
@@ -59,7 +59,7 @@ def main():
         return 0
         
     except Exception as e:
-        print(f"\n❌ Initialization failed: {e}")
+        print(f"\n[ERROR] Initialization failed: {e}")
         import traceback
         traceback.print_exc()
         return 1
