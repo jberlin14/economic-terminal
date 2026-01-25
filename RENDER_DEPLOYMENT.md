@@ -53,10 +53,16 @@ TIMEZONE=America/New_York
 2. Click "Add Disk"
 3. Configure:
    - **Name**: `economic-data`
-   - **Mount Path**: `/opt/render/project/src`
+   - **Mount Path**: `/data`
    - **Size**: 1 GB (free tier)
 
 This ensures your SQLite database persists across deployments.
+
+**Then update your DATABASE_URL environment variable:**
+```
+DATABASE_URL=sqlite:////data/economic_data.db
+```
+Note: Use 4 slashes (`sqlite:////`) for absolute paths.
 
 #### Deploy
 1. Click "Create Web Service"
@@ -163,7 +169,8 @@ DATABASE_URL=your_render_postgres_url python scripts/manual_fetch.py
 
 **Solution**:
 1. Add persistent disk to backend service (see Step 1)
-2. Mount at `/opt/render/project/src`
+2. Mount at `/data`
+3. Update `DATABASE_URL` to `sqlite:////data/economic_data.db`
 
 ### WebSocket connection fails
 
