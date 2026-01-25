@@ -22,12 +22,16 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   
-  const { connected, lastMessage } = useWebSocket('ws://localhost:8000/ws');
+  // Get backend URLs from environment variables
+  const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+  const WS_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:8000/ws';
+
+  const { connected, lastMessage } = useWebSocket(WS_URL);
 
   // Fetch initial dashboard data
   useEffect(() => {
     fetchDashboard();
-    
+
     // Refresh every 5 minutes
     const interval = setInterval(fetchDashboard, 5 * 60 * 1000);
     return () => clearInterval(interval);
@@ -68,7 +72,7 @@ function App() {
 
   const fetchDashboard = async () => {
     try {
-      const response = await fetch('/api/dashboard');
+      const response = await fetch(`${API_URL}/api/dashboard`);
       if (!response.ok) throw new Error('Failed to fetch dashboard');
       const dashboardData = await response.json();
       setData(dashboardData);
