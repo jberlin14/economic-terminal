@@ -1,0 +1,48 @@
+# Economic Terminal - Render.com Configuration
+# https://render.com/docs/blueprint-spec
+
+services:
+  # Web Service (Backend API)
+  - type: web
+    name: economic-terminal
+    env: python
+    region: oregon
+    plan: free
+    branch: main
+    buildCommand: pip install -r requirements.txt
+    startCommand: python scripts/init_db.py && uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.11.0
+      - key: DATABASE_URL
+        fromDatabase:
+          name: economic-terminal-db
+          property: connectionString
+      - key: ALPHA_VANTAGE_KEY
+        sync: false
+      - key: FRED_API_KEY
+        sync: false
+      - key: SENDGRID_API_KEY
+        sync: false
+      - key: SENDGRID_FROM_EMAIL
+        sync: false
+      - key: RECIPIENT_EMAIL
+        sync: false
+      - key: DEBUG
+        value: false
+      - key: LOG_LEVEL
+        value: INFO
+
+databases:
+  - name: economic-terminal-db
+    databaseName: economic_terminal
+    plan: free
+    region: oregon
+
+# Instructions:
+# 1. Push this file to your GitHub repository
+# 2. Go to Render Dashboard -> New -> Blueprint
+# 3. Connect your repository
+# 4. Render will read this file and set up services
+# 5. Add the sync: false environment variables manually
