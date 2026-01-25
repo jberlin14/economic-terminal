@@ -23,13 +23,14 @@ class FXDataFetcher:
     """
     Multi-source FX data fetcher with automatic fallback.
     """
-    
+
     def __init__(self):
         self.api_key = ALPHA_VANTAGE_API_KEY or os.getenv('ALPHA_VANTAGE_KEY', '')
         self.base_url = 'https://www.alphavantage.co/query'
         self.call_count = 0
         self.last_reset = datetime.utcnow().date()
         self._session: Optional[aiohttp.ClientSession] = None
+        self._av_semaphore = asyncio.Semaphore(1)  # Only 1 Alpha Vantage request at a time
     
     async def _get_session(self) -> aiohttp.ClientSession:
         """Get or create aiohttp session."""
@@ -56,64 +57,80 @@ class FXDataFetcher:
         to_currency: str = 'USD'
     ) -> Optional[float]:
         """
-        Fetch rate from Alpha Vantage API.
-        
+        Fetch rate from Alpha Vantage API with rate limiting.
+        Uses semaphore to ensure only 1 request per second.
+
         Args:
             from_currency: Source currency code (e.g., 'EUR')
             to_currency: Target currency code (default: 'USD')
-            
+
         Returns:
             Exchange rate or None if failed
         """
         if not self.api_key:
             logger.warning("Alpha Vantage API key not configured")
             return None
-        
+
         if not self._check_rate_limit():
             logger.warning("Alpha Vantage daily rate limit reached")
             return None
-        
-        try:
-            session = await self._get_session()
-            params = {
-                'function': 'CURRENCY_EXCHANGE_RATE',
-                'from_currency': from_currency,
-                'to_currency': to_currency,
-                'apikey': self.api_key
-            }
-            
-            async with session.get(self.base_url, params=params) as response:
-                self.call_count += 1
-                
-                if response.status != 200:
-                    logger.error(f"Alpha Vantage returned status {response.status}")
+
+        # Use semaphore to ensure only 1 request at a time
+        async with self._av_semaphore:
+            try:
+                session = await self._get_session()
+                params = {
+                    'function': 'CURRENCY_EXCHANGE_RATE',
+                    'from_currency': from_currency,
+                    'to_currency': to_currency,
+                    'apikey': self.api_key
+                }
+
+                async with session.get(self.base_url, params=params) as response:
+                    self.call_count += 1
+
+                    if response.status != 200:
+                        logger.error(f"Alpha Vantage returned status {response.status}")
+                        await asyncio.sleep(1.1)  # Rate limit: 1 req/sec
+                        return None
+
+                    data = await response.json()
+
+                    # Check for API error messages
+                    if 'Error Message' in data:
+                        logger.error(f"Alpha Vantage error: {data['Error Message']}")
+                        await asyncio.sleep(1.1)  # Rate limit: 1 req/sec
+                        return None
+
+                    if 'Note' in data:
+                        # Rate limit warning
+                        logger.warning(f"Alpha Vantage: {data['Note']}")
+                        await asyncio.sleep(1.1)  # Rate limit: 1 req/sec
+                        return None
+
+                    if 'Information' in data:
+                        # Rate limit message - fall back to Yahoo Finance
+                        logger.debug(f"Alpha Vantage rate limit hit for {from_currency}/{to_currency}")
+                        await asyncio.sleep(1.1)  # Rate limit: 1 req/sec
+                        return None
+
+                    # Extract rate
+                    rate_data = data.get('Realtime Currency Exchange Rate', {})
+                    rate_str = rate_data.get('5. Exchange Rate')
+
+                    if rate_str:
+                        # Successful request - respect rate limit
+                        await asyncio.sleep(1.1)  # Rate limit: 1 req/sec
+                        return float(rate_str)
+
+                    logger.error(f"Unexpected Alpha Vantage response: {data}")
+                    await asyncio.sleep(1.1)  # Rate limit: 1 req/sec
                     return None
-                
-                data = await response.json()
-                
-                # Check for API error messages
-                if 'Error Message' in data:
-                    logger.error(f"Alpha Vantage error: {data['Error Message']}")
-                    return None
-                
-                if 'Note' in data:
-                    # Rate limit warning
-                    logger.warning(f"Alpha Vantage: {data['Note']}")
-                    return None
-                
-                # Extract rate
-                rate_data = data.get('Realtime Currency Exchange Rate', {})
-                rate_str = rate_data.get('5. Exchange Rate')
-                
-                if rate_str:
-                    return float(rate_str)
-                
-                logger.error(f"Unexpected Alpha Vantage response: {data}")
+
+            except Exception as e:
+                logger.error(f"Alpha Vantage fetch error: {e}")
+                await asyncio.sleep(1.1)  # Rate limit: 1 req/sec
                 return None
-                
-        except Exception as e:
-            logger.error(f"Alpha Vantage fetch error: {e}")
-            return None
     
     def fetch_yahoo_finance(
         self,
