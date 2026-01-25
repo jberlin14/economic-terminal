@@ -264,14 +264,20 @@ class NewsArticle(Base):
     country_tags = Column(JSON)  # ['US', 'JAPAN', 'MEXICO']
     category = Column(String(50), index=True)  # ECON, FX, POLITICAL, CREDIT, CAT
     severity = Column(String(20), index=True)  # CRITICAL, HIGH, MEDIUM, LOW
-    
+
+    # Leader and institution detection (NEW)
+    leader_mentions = Column(JSON)  # List of leader keys ['powell', 'lagarde']
+    institutions = Column(JSON)  # List of institutions ['FED', 'ECB', 'WHITE_HOUSE']
+    event_types = Column(JSON)  # List of event types ['RATE_DECISION', 'TRADE_POLICY']
+    action_words = Column(JSON)  # List of action words detected ['announces', 'threatens']
+
     # For deduplication
     content_hash = Column(String(64), unique=True, index=True)
-    
+
     # Optional full text (if scraped)
     full_text = Column(Text)
     summary = Column(Text)
-    
+
     # Relevance scoring
     relevance_score = Column(Float)
     keyword_matches = Column(JSON)  # List of matched keywords
@@ -299,7 +305,11 @@ class NewsArticle(Base):
             'country_tags': self.country_tags or [],
             'category': self.category,
             'severity': self.severity,
-            'summary': self.summary
+            'summary': self.summary,
+            'leader_mentions': self.leader_mentions or [],
+            'institutions': self.institutions or [],
+            'event_types': self.event_types or [],
+            'action_words': self.action_words or []
         }
 
 
