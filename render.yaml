@@ -1,0 +1,58 @@
+# Render Infrastructure as Code
+# Deploy with: render blueprint create
+
+services:
+  # Backend API
+  - type: web
+    name: economic-terminal-backend
+    runtime: python
+    region: oregon
+    plan: free
+    branch: main
+    buildCommand: "pip install -r requirements.txt && python scripts/init_db.py"
+    startCommand: "uvicorn backend.main:app --host 0.0.0.0 --port $PORT"
+    healthCheckPath: /api/health
+    envVars:
+      - key: DATABASE_URL
+        value: sqlite:////data/economic_data.db
+      - key: TIMEZONE
+        value: America/New_York
+      - key: LOG_LEVEL
+        value: INFO
+      - key: DEBUG
+        value: false
+      - key: FRED_API_KEY
+        sync: false  # Must be set manually in dashboard
+      - key: ALPHA_VANTAGE_KEY
+        sync: false  # Must be set manually in dashboard
+      - key: SENDGRID_API_KEY
+        sync: false  # Optional
+    disk:
+      name: economic-data
+      mountPath: /data
+      sizeGB: 1
+
+  # Frontend Static Site
+  - type: web
+    name: economic-terminal-frontend
+    runtime: static
+    region: oregon
+    branch: main
+    rootDir: frontend
+    buildCommand: "npm install && npm run build"
+    staticPublishPath: build
+    envVars:
+      - key: REACT_APP_API_URL
+        value: https://economic-terminal-backend.onrender.com
+      - key: REACT_APP_WS_URL
+        value: wss://economic-terminal-backend.onrender.com/ws
+    headers:
+      - path: /*
+        name: X-Frame-Options
+        value: DENY
+      - path: /*
+        name: X-Content-Type-Options
+        value: nosniff
+      - path: /*
+        name: Referrer-Policy
+        value: strict-origin-when-cross-origin

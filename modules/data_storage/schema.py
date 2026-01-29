@@ -9,8 +9,8 @@ from datetime import datetime
 from typing import Optional, List, Dict, Any
 
 from sqlalchemy import (
-    Column, Integer, String, Float, DateTime, JSON, Boolean, 
-    Index, Text, UniqueConstraint
+    Column, Integer, String, Float, DateTime, JSON, Boolean,
+    Index, Text, UniqueConstraint, Date
 )
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.sql import func
@@ -464,4 +464,69 @@ class UserPreference(Base):
             'receive_critical_alerts': self.receive_critical_alerts,
             'digest_time': self.digest_time,
             'custom_thresholds': self.custom_thresholds
+        }
+
+
+class EconomicIndicator(Base):
+    """
+    Economic Indicator Metadata
+
+    Stores metadata for each FRED economic indicator series.
+    Used for historical data tracking and analysis.
+    """
+    __tablename__ = 'economic_indicators'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    series_id = Column(String(50), unique=True, nullable=False, index=True)  # FRED series ID
+    name = Column(String(200), nullable=False)  # Display name
+    report_group = Column(String(100), nullable=False, index=True)  # 'Employment Situation', 'CPI Report', etc.
+    category = Column(String(100))  # 'Establishment Survey', 'Household Survey', etc.
+    units = Column(String(50))  # 'thousands', 'percent', 'index', 'dollars', 'billions'
+    frequency = Column(String(20))  # 'daily', 'weekly', 'monthly', 'quarterly'
+    seasonal_adjustment = Column(String(10), default='SA')  # 'SA' or 'NSA'
+    last_updated = Column(DateTime)
+    latest_value = Column(Float)
+    latest_date = Column(Date)
+
+    # Metadata
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for API response."""
+        return {
+            'series_id': self.series_id,
+            'name': self.name,
+            'report_group': self.report_group,
+            'category': self.category,
+            'units': self.units,
+            'frequency': self.frequency,
+            'latest_value': self.latest_value,
+            'latest_date': self.latest_date.isoformat() if self.latest_date else None
+        }
+
+
+class IndicatorValue(Base):
+    """
+    Historical Indicator Values
+
+    Stores historical time series data for each economic indicator.
+    Optimized for fast queries with composite index on series_id + date.
+    """
+    __tablename__ = 'indicator_values'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    series_id = Column(String(50), nullable=False, index=True)
+    date = Column(Date, nullable=False, index=True)
+    value = Column(Float, nullable=False)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+    __table_args__ = (
+        Index('ix_indicator_series_date', 'series_id', 'date', unique=True),
+    )
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for API response."""
+        return {
+            'date': self.date.isoformat(),
+            'value': self.value
         }

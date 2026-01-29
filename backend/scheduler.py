@@ -224,16 +224,93 @@ async def check_alerts():
         logger.error(f"Alert check failed: {e}")
 
 
+async def update_indicators():
+    """
+    Update economic indicators with latest data from FRED.
+    Runs Monday-Friday at 8:30 AM ET (after economic releases).
+    Only fetches data newer than the most recent stored date for each series.
+    """
+    logger.info("Scheduled: Updating economic indicators from FRED...")
+
+    try:
+        from modules.economic_indicators import IndicatorDataFetcher, IndicatorStorage
+        from modules.data_storage.database import get_db_context
+
+        fetcher = IndicatorDataFetcher()
+
+        if not fetcher.is_available():
+            logger.warning("FRED API not available, skipping indicator update")
+            return
+
+        updated_series = 0
+        new_data_points = 0
+        errors = []
+
+        with get_db_context() as db:
+            storage = IndicatorStorage(db)
+
+            # Get all indicators
+            indicators = storage.get_all_indicators()
+
+            for indicator in indicators:
+                try:
+                    # Get the latest stored date for this series
+                    date_range = storage.get_date_range(indicator.series_id)
+
+                    if date_range:
+                        # Fetch only data after the latest stored date
+                        start_date = date_range['end_date']
+                        df = fetcher.fetch_series(
+                            indicator.series_id,
+                            start_date=start_date,
+                            years_back=1  # Just get recent data
+                        )
+                    else:
+                        # No data stored yet, fetch last month
+                        from datetime import datetime, timedelta
+                        start = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+                        df = fetcher.fetch_series(
+                            indicator.series_id,
+                            start_date=start
+                        )
+
+                    if df is not None and not df.empty:
+                        # Store new values
+                        stored = storage.store_values(indicator.series_id, df)
+
+                        if stored > 0:
+                            updated_series += 1
+                            new_data_points += stored
+                            logger.debug(f"  {indicator.series_id}: +{stored} new data points")
+
+                except Exception as e:
+                    errors.append(indicator.series_id)
+                    logger.error(f"  {indicator.series_id}: {e}")
+
+        if updated_series > 0:
+            logger.success(f"Indicators update complete: {updated_series} series updated, {new_data_points} new data points")
+        else:
+            logger.info("Indicators update complete: No new data available")
+
+        if errors:
+            logger.warning(f"Failed to update {len(errors)} series: {', '.join(errors[:5])}")
+
+    except Exception as e:
+        logger.error(f"Indicator update failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+
 async def send_daily_digest():
     """Send daily market digest email."""
     logger.info("Sending daily digest...")
-    
+
     try:
         # TODO: Implement daily digest email
         # from modules.email_reporter.digest_generator import generate_daily_digest
         # await generate_daily_digest()
         logger.info("Daily digest sent (placeholder)")
-        
+
     except Exception as e:
         logger.error(f"Daily digest failed: {e}")
 
@@ -312,6 +389,15 @@ def start_scheduler():
         replace_existing=True
     )
     
+    # Economic indicators - daily at 8:30 AM ET, Monday-Friday
+    scheduler.add_job(
+        update_indicators,
+        CronTrigger(hour=8, minute=30, day_of_week='mon-fri', timezone='America/New_York'),
+        id='indicator_update',
+        name='Economic Indicators Update',
+        replace_existing=True
+    )
+
     # Data cleanup - daily at 3 AM ET
     scheduler.add_job(
         cleanup_old_data,
@@ -320,7 +406,7 @@ def start_scheduler():
         name='Data Cleanup',
         replace_existing=True
     )
-    
+
     scheduler.start()
     logger.info("Scheduler started with jobs:")
     for job in scheduler.get_jobs():

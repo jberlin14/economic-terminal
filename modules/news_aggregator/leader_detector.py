@@ -15,7 +15,8 @@ from .config import (
     HIGH_ACTIONS,
     EVENT_TYPES,
     GEOPOLITICAL_CRITICAL,
-    COUNTRY_KEYWORDS
+    COUNTRY_KEYWORDS,
+    INSTITUTION_KEYWORDS,
 )
 
 
@@ -154,12 +155,13 @@ class LeaderDetector:
 
         return list(set(found_countries))
 
-    def get_institutions(self, leader_keys: List[str]) -> List[str]:
+    def get_institutions(self, leader_keys: List[str], text: str = '') -> List[str]:
         """
-        Extract institutions from detected leaders.
+        Extract institutions from detected leaders AND from keyword matching.
 
         Args:
             leader_keys: List of leader keys
+            text: Article text for keyword-based detection
 
         Returns:
             List of institution names
@@ -168,6 +170,15 @@ class LeaderDetector:
         for leader_key in leader_keys:
             if leader_key in self.leaders:
                 institutions.append(self.leaders[leader_key]['institution'])
+
+        # Also detect institutions from text keywords
+        if text:
+            text_lower = text.lower()
+            for inst, keywords in INSTITUTION_KEYWORDS.items():
+                for kw in keywords:
+                    if kw in text_lower:
+                        institutions.append(inst)
+                        break
 
         return list(set(institutions))
 
@@ -205,13 +216,13 @@ class LeaderDetector:
         if leaders and actions['high']:
             return 'HIGH'
 
-        # HIGH: Military, sanctions, or trade war events
-        high_events = ['MILITARY', 'SANCTIONS', 'TRADE_POLICY']
+        # HIGH: Military, sanctions, trade war, or rate decision events
+        high_events = ['MILITARY', 'SANCTIONS', 'TRADE_POLICY', 'RATE_DECISION']
         if any(event in high_events for event in events):
             return 'HIGH'
 
-        # MEDIUM: Leader mentioned or rate decision
-        if leaders or 'RATE_DECISION' in events:
+        # MEDIUM: Leader mentioned
+        if leaders:
             return 'MEDIUM'
 
         # MEDIUM: Economic data or market move
@@ -270,8 +281,8 @@ class LeaderDetector:
         countries_from_keywords = self.detect_countries_from_keywords(text)
         all_countries = list(set(countries_from_leaders + countries_from_keywords))
 
-        # Get institutions
-        institutions = self.get_institutions(leader_keys)
+        # Get institutions (from leaders + text keywords)
+        institutions = self.get_institutions(leader_keys, text)
 
         # Calculate severity
         severity = self.calculate_severity(leader_keys, actions, events, text)

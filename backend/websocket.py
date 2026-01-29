@@ -11,6 +11,8 @@ from typing import List, Dict, Any, Set
 from fastapi import WebSocket, WebSocketDisconnect
 from loguru import logger
 
+from modules.utils.timezone import get_current_time
+
 
 class ConnectionManager:
     """
@@ -81,7 +83,7 @@ async def websocket_endpoint(websocket: WebSocket):
     # Send welcome message
     await manager.send_personal({
         'type': 'connected',
-        'timestamp': datetime.utcnow().isoformat(),
+        'timestamp': get_current_time().isoformat(),
         'message': 'Connected to Economic Terminal'
     }, websocket)
     
@@ -110,7 +112,7 @@ async def handle_client_message(websocket: WebSocket, message: dict):
     if msg_type == 'ping':
         await manager.send_personal({
             'type': 'pong',
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': get_current_time().isoformat()
         }, websocket)
     
     elif msg_type == 'subscribe':
@@ -118,14 +120,14 @@ async def handle_client_message(websocket: WebSocket, message: dict):
         await manager.send_personal({
             'type': 'subscribed',
             'channel': channel,
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': get_current_time().isoformat()
         }, websocket)
     
     elif msg_type == 'get_status':
         await manager.send_personal({
             'type': 'status',
             'connections': manager.connection_count,
-            'timestamp': datetime.utcnow().isoformat()
+            'timestamp': get_current_time().isoformat()
         }, websocket)
 
 
@@ -134,7 +136,7 @@ async def broadcast_fx_update(fx_data: Dict[str, Any]):
     await manager.broadcast({
         'type': 'fx_update',
         'data': fx_data,
-        'timestamp': datetime.utcnow().isoformat()
+        'timestamp': get_current_time().isoformat()
     })
 
 
@@ -143,7 +145,7 @@ async def broadcast_yield_update(yield_data: Dict[str, Any]):
     await manager.broadcast({
         'type': 'yield_update',
         'data': yield_data,
-        'timestamp': datetime.utcnow().isoformat()
+        'timestamp': get_current_time().isoformat()
     })
 
 
@@ -153,7 +155,7 @@ async def broadcast_alert(alert_data: Dict[str, Any]):
         'type': 'alert',
         'severity': alert_data.get('severity', 'HIGH'),
         'data': alert_data,
-        'timestamp': datetime.utcnow().isoformat()
+        'timestamp': get_current_time().isoformat()
     })
 
 
@@ -162,5 +164,5 @@ async def broadcast_news(news_data: Dict[str, Any]):
     await manager.broadcast({
         'type': 'news',
         'data': news_data,
-        'timestamp': datetime.utcnow().isoformat()
+        'timestamp': get_current_time().isoformat()
     })

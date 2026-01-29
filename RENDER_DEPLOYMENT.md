@@ -3,10 +3,18 @@
 ## Overview
 This guide walks you through deploying the Economic Terminal to Render.com with separate frontend and backend services.
 
+## Quick Deploy Option
+For fastest deployment, use the `render.yaml` blueprint:
+```bash
+render blueprint create
+```
+This will automatically create both frontend and backend services with proper configuration.
+
 ## Architecture
 - **Backend Service**: Python FastAPI application (Web Service)
 - **Frontend Service**: React static site (Static Site)
 - **Database**: SQLite (stored on backend disk)
+- **Timezone**: US Eastern (America/New_York) for market hours
 
 ## Step-by-Step Deployment
 
@@ -125,18 +133,80 @@ You should see the Economic Terminal dashboard loading data.
 
 ## 4. Initial Data Population
 
-After deployment, populate your database:
+After deployment, populate your database using Render's Shell feature:
 
-1. SSH into Render or use their Shell feature
-2. Run the manual fetch script:
+### Option 1: Quick Start (Recommended)
+```bash
+python scripts/quick_start.py
+```
+This automated script will:
+- Initialize the database
+- Add performance indexes
+- Fetch economic indicator data
+- Run health checks
+
+### Option 2: Manual Setup
+```bash
+# Initialize database
+python scripts/init_db.py
+
+# Add performance indexes
+python scripts/add_indexes.py
+
+# Initialize economic indicators
+python scripts/init_indicators.py
+
+# Verify setup
+python scripts/health_check.py
+```
+
+### Option 3: Manual Data Fetch
 ```bash
 python scripts/manual_fetch.py
 ```
 
-Or run it locally with your production DATABASE_URL:
+**Note**: The scheduler will automatically fetch data after deployment, but manual initialization ensures data is available immediately.
+
+---
+
+## 5. Monitoring and Health Checks
+
+### Health Check Endpoint
+Monitor your deployment health:
 ```bash
-DATABASE_URL=your_render_postgres_url python scripts/manual_fetch.py
+curl https://your-backend-url.onrender.com/api/health
 ```
+
+Expected response:
+```json
+{
+  "status": "healthy",
+  "timestamp": "2026-01-26T10:30:45-05:00",
+  "database": "connected",
+  "timezone": "America/New_York"
+}
+```
+
+### Comprehensive Health Check
+Use Render's Shell to run detailed diagnostics:
+```bash
+python scripts/health_check.py
+```
+
+This checks:
+- Environment configuration
+- Database connectivity and tables
+- Economic indicators module and FRED API
+- FX monitor and Alpha Vantage API
+- Yields monitor
+- News aggregator
+- Risk detector
+
+### Monitoring Best Practices
+1. **Uptime Monitoring**: Use UptimeRobot or similar to ping `/api/health` every 5-10 minutes
+2. **Log Monitoring**: Check Render logs regularly for errors
+3. **Data Freshness**: Verify data is updating by checking timestamps in API responses
+4. **Alert Testing**: Test risk alert generation periodically
 
 ---
 

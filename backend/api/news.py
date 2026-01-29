@@ -11,6 +11,7 @@ from modules.data_storage.database import get_db
 from modules.data_storage.queries import QueryHelper
 from modules.news_aggregator.search import NewsSearch
 from modules.news_aggregator.leader_detector import LeaderDetector
+from modules.utils.timezone import get_current_time
 
 router = APIRouter()
 
@@ -41,7 +42,7 @@ async def get_recent_news(
     )
     
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "hours": hours,
         "count": len(articles),
         "articles": [a.to_dict() for a in articles]
@@ -60,7 +61,7 @@ async def get_critical_news(
     articles = helper.get_critical_news(hours=hours)
     
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "count": len(articles),
         "articles": [a.to_dict() for a in articles]
     }
@@ -120,7 +121,7 @@ async def get_news_summary(
             by_country[country] = by_country.get(country, 0) + 1
     
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "hours": hours,
         "total": len(articles),
         "by_severity": by_severity,

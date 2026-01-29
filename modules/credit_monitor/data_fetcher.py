@@ -208,31 +208,37 @@ class CreditDataFetcher:
 
         for index_name, config in CREDIT_INDICES.items():
             try:
-                # Fetch current value
-                current_value = self.fetch_series(config['fred_id'])
+                # Fetch current value (FRED returns OAS in percentage points)
+                raw_value = self.fetch_series(config['fred_id'])
 
-                if current_value is None:
+                if raw_value is None:
                     errors.append(f"No data for {index_name}")
                     continue
+
+                # Convert from percentage points to basis points (1% = 100 bps)
+                current_value = round(raw_value * 100, 2)
 
                 # Fetch 90-day history for percentile calculation
                 history_90d = self.fetch_series_history(config['fred_id'], days=90)
 
+                # Convert history to bps too
+                history_bps = [{'date': h['date'], 'value': h['value'] * 100} for h in history_90d] if history_90d else []
+
                 # Calculate percentile
                 percentile_90d = None
-                if history_90d:
-                    percentile_90d = self.calculate_percentile(current_value, history_90d)
+                if history_bps:
+                    percentile_90d = self.calculate_percentile(current_value, history_bps)
 
                 # Calculate 90-day average
                 avg_90d = None
-                if history_90d:
-                    values = [h['value'] for h in history_90d]
+                if history_bps:
+                    values = [h['value'] for h in history_bps]
                     avg_90d = round(sum(values) / len(values), 2)
 
                 # Calculate 1-day change
                 change_1d = None
-                if len(history_90d) >= 2:
-                    yesterday_value = history_90d[-2]['value']
+                if len(history_bps) >= 2:
+                    yesterday_value = history_bps[-2]['value']
                     change_1d = round(current_value - yesterday_value, 2)
 
                 # Create spread data

@@ -5,6 +5,7 @@ Credit Spreads API Endpoints
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
+from modules.utils.timezone import get_current_time
 from sqlalchemy.orm import Session
 
 from modules.data_storage.database import get_db
@@ -22,7 +23,7 @@ async def get_credit_spreads(db: Session = Depends(get_db)):
     spreads = helper.get_latest_credit_spreads()
     
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "count": len(spreads),
         "spreads": [s.to_dict() for s in spreads]
     }
@@ -92,7 +93,7 @@ async def get_credit_summary(db: Session = Depends(get_db)):
             ig_spread = s
     
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "investment_grade": ig_spread.to_dict() if ig_spread else None,
         "high_yield": hy_spread.to_dict() if hy_spread else None,
         "all_spreads": [s.to_dict() for s in spreads],

@@ -230,7 +230,8 @@ class QueryHelper:
         hours: int = 24,
         severity: Optional[str] = None,
         category: Optional[str] = None,
-        limit: int = 50
+        limit: int = 50,
+        sort_by_relevance: bool = False
     ) -> List[NewsArticle]:
         """Get recent news articles with optional filters."""
         cutoff = datetime.utcnow() - timedelta(hours=hours)
@@ -238,18 +239,22 @@ class QueryHelper:
             self.db.query(NewsArticle)
             .filter(NewsArticle.published_at >= cutoff)
         )
-        
+
         if severity:
             query = query.filter(NewsArticle.severity == severity)
         if category:
             query = query.filter(NewsArticle.category == category)
-        
-        return (
-            query
-            .order_by(desc(NewsArticle.published_at))
-            .limit(limit)
-            .all()
-        )
+
+        if sort_by_relevance:
+            # Higher relevance first, then most recent
+            query = query.order_by(
+                desc(NewsArticle.relevance_score),
+                desc(NewsArticle.published_at)
+            )
+        else:
+            query = query.order_by(desc(NewsArticle.published_at))
+
+        return query.limit(limit).all()
     
     def get_critical_news(
         self,
@@ -433,7 +438,7 @@ class QueryHelper:
             'recent_releases': [r.to_dict() for r in self.get_recent_releases(days=3)],
             'upcoming_releases': [r.to_dict() for r in self.get_upcoming_releases(days=7)],
             'active_alerts': [a.to_dict() for a in self.get_active_alerts()],
-            'recent_news': [n.to_dict() for n in self.get_recent_news(hours=24, limit=20)],
+            'recent_news': [n.to_dict() for n in self.get_recent_news(hours=24, limit=30, sort_by_relevance=True)],
             'system_health': [h.to_dict() for h in self.get_system_health()],
             'timestamp': datetime.utcnow().isoformat()
         }
@@ -454,10 +459,13 @@ class QueryHelper:
             .delete()
         )
         
-        # Yield curves older than 90 days
+        # Yield curves: keep one record per day forever (for historical charts).
+        # Only delete duplicate intraday snapshots older than 90 days.
+        # The backfill script and daily snapshots use source='fred_daily'.
         counts['yield_curves'] = (
             self.db.query(YieldCurve)
             .filter(YieldCurve.timestamp < cutoff)
+            .filter(YieldCurve.source != 'fred_daily')
             .delete()
         )
         

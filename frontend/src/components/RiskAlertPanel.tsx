@@ -53,10 +53,11 @@ export const RiskAlertPanel: React.FC<RiskAlertPanelProps> = ({ alerts, onDismis
 
   const formatTime = (timestamp: string) => {
     const date = new Date(timestamp);
-    return date.toLocaleTimeString('en-US', { 
-      hour: '2-digit', 
+    return date.toLocaleTimeString('en-US', {
+      hour: '2-digit',
       minute: '2-digit',
-      hour12: true 
+      hour12: true,
+      timeZone: 'America/New_York'
     });
   };
 

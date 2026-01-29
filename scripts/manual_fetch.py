@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Manual data fetch script for Economic Terminal.
-Fetches and stores all data types: FX rates, yields, credit spreads, and news.
+Fetches and stores all data types: FX rates, yields, credit spreads, news, and economic indicators.
 
 Usage:
     python scripts/manual_fetch.py              # Fetch everything
@@ -9,6 +9,7 @@ Usage:
     python scripts/manual_fetch.py --yields     # Only yield curves
     python scripts/manual_fetch.py --credit     # Only credit spreads
     python scripts/manual_fetch.py --news       # Only news feeds
+    python scripts/manual_fetch.py --indicators # Only economic indicators
     python scripts/manual_fetch.py --all        # Fetch everything (explicit)
 """
 
@@ -258,6 +259,103 @@ def fetch_news() -> dict:
     return result
 
 
+def fetch_indicators() -> dict:
+    """Fetch and store economic indicators from FRED."""
+    print("\n" + "=" * 60)
+    print("FETCHING ECONOMIC INDICATORS")
+    print("=" * 60)
+
+    result = {
+        'success': False,
+        'count': 0,
+        'updated': 0,
+        'error': None
+    }
+
+    try:
+        from modules.economic_indicators.data_fetcher import IndicatorDataFetcher
+        from modules.economic_indicators.storage import IndicatorStorage
+        from modules.data_storage.database import get_db_context
+        from datetime import timedelta
+
+        print("Initializing indicator data fetcher...")
+        fetcher = IndicatorDataFetcher()
+
+        if not fetcher._fred:
+            result['error'] = "FRED API not available - check FRED_API_KEY in .env"
+            print(f"ERROR: {result['error']}")
+            return result
+
+        print("Loading indicator list from database...")
+
+        with get_db_context() as db:
+            storage = IndicatorStorage(db)
+            indicators = storage.get_all_indicators()
+
+            if not indicators:
+                result['error'] = "No indicators found in database. Run init_indicators.py first."
+                print(f"ERROR: {result['error']}")
+                return result
+
+            print(f"Found {len(indicators)} indicators to update\n")
+
+            updated_series = 0
+            total_new_points = 0
+
+            for i, indicator in enumerate(indicators, 1):
+                try:
+                    # Get date range to fetch from last known date
+                    date_range = storage.get_date_range(indicator.series_id)
+
+                    if date_range:
+                        start_date = date_range['end_date'].strftime('%Y-%m-%d')
+                        print(f"[{i}/{len(indicators)}] {indicator.series_id:12} (from {start_date})", end="")
+                    else:
+                        # No data yet, fetch last 30 days
+                        start = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
+                        print(f"[{i}/{len(indicators)}] {indicator.series_id:12} (new)", end="")
+                        start_date = start
+
+                    # Fetch latest data
+                    df = fetcher.fetch_series(
+                        indicator.series_id,
+                        start_date=start_date,
+                        years_back=1
+                    )
+
+                    if df is not None and not df.empty:
+                        stored = storage.store_values(indicator.series_id, df)
+                        total_new_points += stored
+
+                        if stored > 0:
+                            updated_series += 1
+                            print(f" -> {stored} new points")
+                        else:
+                            print(f" -> up to date")
+                    else:
+                        print(f" -> no data")
+
+                except Exception as e:
+                    print(f" -> ERROR: {e}")
+                    logger.warning(f"Failed to update {indicator.series_id}: {e}")
+                    continue
+
+            result['success'] = True
+            result['count'] = len(indicators)
+            result['updated'] = updated_series
+            result['new_points'] = total_new_points
+
+            print(f"\nSUCCESS: Updated {updated_series}/{len(indicators)} indicators")
+            print(f"  Total new data points: {total_new_points}")
+
+    except Exception as e:
+        result['error'] = str(e)
+        logger.error(f"Indicators fetch failed: {e}")
+        print(f"ERROR: {e}")
+
+    return result
+
+
 def print_summary(results: dict):
     """Print summary of all fetch operations."""
     print("\n" + "=" * 60)
@@ -273,6 +371,8 @@ def print_summary(results: dict):
         if result['success']:
             if 'duplicates' in result:
                 print(f"  {result['count']} new, {result['duplicates']} duplicates")
+            elif 'updated' in result:
+                print(f"  {result['updated']}/{result['count']} updated, {result.get('new_points', 0)} new points")
             else:
                 print(f"  {result['count']} items")
         else:
@@ -298,6 +398,7 @@ Examples:
   python scripts/manual_fetch.py --yields     # Only yield curves
   python scripts/manual_fetch.py --credit     # Only credit spreads
   python scripts/manual_fetch.py --news       # Only news feeds
+  python scripts/manual_fetch.py --indicators # Only economic indicators
         """
     )
 
@@ -305,12 +406,13 @@ Examples:
     parser.add_argument('--yields', action='store_true', help='Fetch yield curve only')
     parser.add_argument('--credit', action='store_true', help='Fetch credit spreads only')
     parser.add_argument('--news', action='store_true', help='Fetch news only')
+    parser.add_argument('--indicators', action='store_true', help='Fetch economic indicators only')
     parser.add_argument('--all', action='store_true', help='Fetch everything (default)')
 
     args = parser.parse_args()
 
     # If no specific flags, fetch all
-    fetch_all = args.all or not (args.fx or args.yields or args.credit or args.news)
+    fetch_all = args.all or not (args.fx or args.yields or args.credit or args.news or args.indicators)
 
     print("=" * 60)
     print("ECONOMIC TERMINAL - MANUAL DATA FETCH")
@@ -330,6 +432,9 @@ Examples:
 
     if fetch_all or args.news:
         results['News Feeds'] = fetch_news()
+
+    if fetch_all or args.indicators:
+        results['Economic Indicators'] = fetch_indicators()
 
     # Print summary
     print_summary(results)

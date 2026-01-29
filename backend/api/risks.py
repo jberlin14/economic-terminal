@@ -5,6 +5,7 @@ Risk Alerts API Endpoints
 from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query
+from modules.utils.timezone import get_current_time
 from sqlalchemy.orm import Session
 
 from modules.data_storage.database import get_db
@@ -17,7 +18,7 @@ router = APIRouter()
 @router.get("/active")
 async def get_active_alerts(
     alert_type: Optional[str] = Query(default=None),
-    severity: Optional[str] = Query(default=None, regex="^(CRITICAL|HIGH|MEDIUM)$"),
+    severity: Optional[str] = Query(default=None, pattern="^(CRITICAL|HIGH|MEDIUM)$"),
     db: Session = Depends(get_db)
 ):
     """
@@ -27,7 +28,7 @@ async def get_active_alerts(
     alerts = helper.get_active_alerts(alert_type=alert_type, severity=severity)
     
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "count": len(alerts),
         "alerts": [a.to_dict() for a in alerts]
     }
@@ -42,7 +43,7 @@ async def get_critical_alerts(db: Session = Depends(get_db)):
     alerts = helper.get_critical_alerts()
     
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "count": len(alerts),
         "alerts": [a.to_dict() for a in alerts]
     }
@@ -79,7 +80,7 @@ async def get_digest_alerts(
     alerts_by_severity = helper.get_alerts_for_digest(hours=hours)
     
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "hours": hours,
         "critical": [a.to_dict() for a in alerts_by_severity.get('CRITICAL', [])],
         "high": [a.to_dict() for a in alerts_by_severity.get('HIGH', [])],

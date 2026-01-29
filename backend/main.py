@@ -9,12 +9,19 @@ from datetime import datetime
 from contextlib import asynccontextmanager
 from typing import Optional
 
+# Load environment variables from .env file
+from dotenv import load_dotenv
+load_dotenv()
+
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse
 from sqlalchemy.orm import Session
 from loguru import logger
+
+# Import timezone utility
+from modules.utils.timezone import get_current_time
 
 # Configure logging
 logger.add(
@@ -29,7 +36,7 @@ from modules.data_storage.database import get_db, init_db, check_connection
 from modules.data_storage.queries import QueryHelper
 
 # Import API routers
-from backend.api import fx, yields, credit, news, risks, health, news_advanced
+from backend.api import fx, yields, credit, news, risks, health, news_advanced, indicators, calendar
 
 # Import scheduler
 from backend.scheduler import start_scheduler, stop_scheduler
@@ -93,6 +100,8 @@ app.include_router(credit.router, prefix="/api/credit", tags=["Credit"])
 app.include_router(news.router, prefix="/api/news", tags=["News"])
 app.include_router(news_advanced.router, prefix="/api/news", tags=["News Advanced"])
 app.include_router(risks.router, prefix="/api/risks", tags=["Risk Alerts"])
+app.include_router(indicators.router, prefix="/api/indicators", tags=["Economic Indicators"])
+app.include_router(calendar.router, prefix="/api/calendar", tags=["Economic Calendar"])
 
 
 # =============================================================================
@@ -120,13 +129,91 @@ async def get_status(db: Session = Depends(get_db)):
     Get system status overview.
     """
     helper = QueryHelper(db)
-    
+
     return {
-        'timestamp': datetime.utcnow().isoformat(),
+        'timestamp': get_current_time().isoformat(),
         'database_connected': check_connection(),
         'module_health': [h.to_dict() for h in helper.get_system_health()],
         'active_alerts': len(helper.get_active_alerts()),
         'critical_alerts': len(helper.get_critical_alerts())
+    }
+
+
+@app.get("/api/summary")
+async def get_market_summary(db: Session = Depends(get_db)):
+    """
+    Get AI-generated market summary.
+
+    Returns comprehensive analysis of current economic conditions including:
+    - Headline summary
+    - Overview narrative
+    - Section-by-section analysis
+    - Key metrics
+    - Sentiment assessment
+    - Alerts and trends
+    """
+    try:
+        from modules.market_summary import MarketSummaryGenerator
+
+        generator = MarketSummaryGenerator(db)
+        return generator.to_dict()
+    except Exception as e:
+        logger.error(f"Market summary error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/narrative/generate")
+async def generate_market_narrative(db: Session = Depends(get_db)):
+    """
+    Generate an AI-powered market narrative using Claude.
+
+    This endpoint triggers on-demand generation of a comprehensive
+    market analysis narrative. The narrative is generated fresh each time
+    and uses the latest available data.
+
+    Returns:
+        {
+            "narrative": "Long-form analysis text...",
+            "generated_at": "2026-01-27T...",
+            "model": "claude-sonnet-4-20250514",
+            "tokens_used": 1234
+        }
+    """
+    try:
+        from modules.market_summary import AIMarketNarrative
+
+        generator = AIMarketNarrative(db)
+
+        if not generator.is_available():
+            raise HTTPException(
+                status_code=503,
+                detail="AI narrative generation not available. Please configure ANTHROPIC_API_KEY."
+            )
+
+        result = await generator.generate_narrative()
+
+        if "error" in result:
+            raise HTTPException(status_code=500, detail=result["error"])
+
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Narrative generation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/narrative/status")
+async def get_narrative_status():
+    """
+    Check if AI narrative generation is available.
+    """
+    import os
+    api_key = os.getenv('ANTHROPIC_API_KEY')
+
+    return {
+        "available": bool(api_key),
+        "timestamp": get_current_time().isoformat()
     }
 
 

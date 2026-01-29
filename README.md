@@ -63,7 +63,7 @@ economic-terminal/
 - Node.js 18+
 - Git
 
-### Installation
+### Quick Start (Recommended)
 
 1. **Clone and setup environment**:
 ```bash
@@ -78,23 +78,23 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-2. **Configure environment variables**:
+2. **Configure environment**:
 ```bash
 cp .env.example .env
-# Edit .env with your API keys
+# Edit .env with your API keys (at minimum: FRED_API_KEY)
 ```
 
-3. **Initialize database**:
+3. **Run automated setup**:
 ```bash
-python scripts/init_db.py
+python scripts/quick_start.py
 ```
+This automated script will:
+- Verify environment configuration
+- Initialize database with proper indexes
+- Fetch economic indicator data (69 series)
+- Run comprehensive health checks
 
-4. **Test modules**:
-```bash
-python scripts/test_modules.py
-```
-
-5. **Run the application**:
+4. **Start the application**:
 ```bash
 # Start backend
 uvicorn backend.main:app --reload
@@ -105,7 +105,25 @@ npm install
 npm start
 ```
 
-Visit `http://localhost:8000` for the API, `http://localhost:3000` for the React app.
+Visit `http://localhost:3000` for the dashboard, `http://localhost:8000/docs` for API docs.
+
+### Manual Installation
+
+If you prefer manual setup or need to troubleshoot:
+
+```bash
+# Initialize database
+python scripts/init_db.py
+
+# Add performance indexes
+python scripts/add_indexes.py
+
+# Initialize economic indicators
+python scripts/init_indicators.py
+
+# Run health check
+python scripts/health_check.py
+```
 
 ## API Keys Required
 
@@ -165,13 +183,47 @@ See [SETUP_GUIDE.md](SETUP_GUIDE.md) for detailed deployment instructions to Ren
 
 ## Development
 
+### Useful Scripts
+
+```bash
+# Quick automated setup
+python scripts/quick_start.py
+
+# Comprehensive system health check
+python scripts/health_check.py
+
+# Initialize economic indicators
+python scripts/init_indicators.py
+
+# Add database performance indexes
+python scripts/add_indexes.py
+
+# Manual data fetch
+python scripts/manual_fetch.py
+
+# Check specific indicator series
+python scripts/check_series.py PAYEMS UNRATE
+
+# Test comparison feature
+python scripts/test_comparison.py
+
+# Clean up failed indicators
+python scripts/cleanup_failed_indicators.py
+```
+
 ### Testing
 ```bash
-# Run all tests
+# Run all module tests
 python scripts/test_modules.py
 
 # Run specific module test
 python scripts/test_modules.py --module fx
+
+# Test news aggregator
+python scripts/test_news_aggregator.py
+
+# Test credit monitor
+python scripts/test_credit_monitor.py
 ```
 
 ### Adding New Modules

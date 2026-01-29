@@ -28,20 +28,13 @@ export const CreditSpreadsPanel: React.FC<CreditSpreadsPanelProps> = ({ spreads 
     return labels[indexName] || indexName;
   };
 
-  const getRiskClass = (percentile: number | null): string => {
-    if (percentile === null) return 'border-terminal-border';
-    if (percentile >= 95) return 'border-critical bg-critical/10';
-    if (percentile >= 90) return 'border-warning bg-warning/10';
-    if (percentile >= 75) return 'border-warning/50 bg-warning/5';
+  // Border risk class based on spread vs 90d average
+  const getRiskClass = (spread: CreditSpread): string => {
+    if (spread.avg_90d === null || spread.spread_bps === null) return 'border-terminal-border';
+    const ratio = spread.spread_bps / spread.avg_90d;
+    if (ratio >= 1.3) return 'border-critical bg-critical/10';
+    if (ratio >= 1.15) return 'border-warning bg-warning/10';
     return 'border-terminal-border';
-  };
-
-  const getPercentileColor = (percentile: number | null): string => {
-    if (percentile === null) return 'text-terminal-text-dim';
-    if (percentile >= 95) return 'text-critical';
-    if (percentile >= 90) return 'text-warning';
-    if (percentile >= 75) return 'text-yellow-400';
-    return 'text-positive';
   };
 
   const getChangeColor = (change: number | null): string => {
@@ -54,11 +47,6 @@ export const CreditSpreadsPanel: React.FC<CreditSpreadsPanelProps> = ({ spreads 
     if (change === null) return 'N/A';
     const sign = change >= 0 ? '+' : '';
     return `${sign}${change.toFixed(2)}`;
-  };
-
-  const formatPercentile = (percentile: number | null): string => {
-    if (percentile === null) return 'N/A';
-    return `${percentile.toFixed(0)}th`;
   };
 
   // Sort by index type (IG, BBB, HY, HY_CCC)
@@ -81,7 +69,7 @@ export const CreditSpreadsPanel: React.FC<CreditSpreadsPanelProps> = ({ spreads 
         {sortedSpreads.map((spread) => (
           <div
             key={spread.index_name}
-            className={`p-4 rounded-lg border-2 transition-all duration-300 ${getRiskClass(spread.percentile_90d)}`}
+            className={`p-4 rounded-lg border-2 transition-all duration-300 ${getRiskClass(spread)}`}
           >
             {/* Header */}
             <div className="flex justify-between items-start mb-2">
@@ -93,25 +81,19 @@ export const CreditSpreadsPanel: React.FC<CreditSpreadsPanelProps> = ({ spreads 
                   {getIndexLabel(spread.index_name)}
                 </div>
               </div>
-              {spread.percentile_90d !== null && spread.percentile_90d >= 90 && (
+              {spread.avg_90d !== null && spread.spread_bps !== null && spread.spread_bps / spread.avg_90d >= 1.3 && (
                 <AlertTriangle className="w-5 h-5 text-warning" />
               )}
             </div>
 
             {/* Spread Value */}
             <div className="text-2xl font-mono font-bold mb-3">
-              {spread.spread_bps !== null && spread.spread_bps !== undefined ? spread.spread_bps.toFixed(2) : 'N/A'}
+              {spread.spread_bps !== null && spread.spread_bps !== undefined ? spread.spread_bps.toFixed(0) : 'N/A'}
               <span className="text-sm text-terminal-text-dim ml-1">bps</span>
             </div>
 
             {/* Metrics Grid */}
             <div className="grid grid-cols-2 gap-2 text-xs font-mono">
-              <div>
-                <div className="text-terminal-text-dim">90d Pctl</div>
-                <div className={getPercentileColor(spread.percentile_90d)}>
-                  {formatPercentile(spread.percentile_90d)}
-                </div>
-              </div>
               <div>
                 <div className="text-terminal-text-dim">Chg 1D</div>
                 <div className={`flex items-center gap-0.5 ${getChangeColor(spread.change_1d)}`}>
@@ -126,9 +108,22 @@ export const CreditSpreadsPanel: React.FC<CreditSpreadsPanelProps> = ({ spreads 
                 </div>
               </div>
               <div>
+                <div className="text-terminal-text-dim">Chg 1W</div>
+                <div className={`flex items-center gap-0.5 ${getChangeColor(spread.change_1w)}`}>
+                  {spread.change_1w !== null && (
+                    spread.change_1w > 0
+                      ? <TrendingUp className="w-3 h-3" />
+                      : spread.change_1w < 0
+                      ? <TrendingDown className="w-3 h-3" />
+                      : null
+                  )}
+                  <span>{formatChange(spread.change_1w)}</span>
+                </div>
+              </div>
+              <div>
                 <div className="text-terminal-text-dim">Avg 90D</div>
                 <div className="text-terminal-text">
-                  {spread.avg_90d !== null ? spread.avg_90d.toFixed(2) : 'N/A'}
+                  {spread.avg_90d !== null ? spread.avg_90d.toFixed(0) : 'N/A'}
                 </div>
               </div>
               <div>
@@ -158,11 +153,16 @@ export const CreditSpreadsPanel: React.FC<CreditSpreadsPanelProps> = ({ spreads 
 };
 
 const getMarketStatus = (spreads: CreditSpread[]): string => {
-  const highPercentile = spreads.some(s => s.percentile_90d !== null && s.percentile_90d >= 95);
-  const elevatedPercentile = spreads.some(s => s.percentile_90d !== null && s.percentile_90d >= 90);
+  // Use spread vs 90d average ratio for status
+  const hasStressed = spreads.some(s =>
+    s.avg_90d !== null && s.spread_bps !== null && s.spread_bps / s.avg_90d >= 1.3
+  );
+  const hasElevated = spreads.some(s =>
+    s.avg_90d !== null && s.spread_bps !== null && s.spread_bps / s.avg_90d >= 1.15
+  );
 
-  if (highPercentile) return 'STRESSED';
-  if (elevatedPercentile) return 'ELEVATED';
+  if (hasStressed) return 'STRESSED';
+  if (hasElevated) return 'ELEVATED';
   return 'NORMAL';
 };
 

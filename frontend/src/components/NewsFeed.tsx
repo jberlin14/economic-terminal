@@ -51,15 +51,27 @@ export const NewsFeed: React.FC<NewsFeedProps> = ({ articles }) => {
 
   const formatTime = (timestamp: string) => {
     const date = new Date(timestamp);
+    if (isNaN(date.getTime())) {
+      return 'Unknown';
+    }
     const now = new Date();
     const diffMs = now.getTime() - date.getTime();
-    const diffMins = Math.floor(diffMs / 60000);
+    const absDiffMs = Math.abs(diffMs);
+    const diffMins = Math.floor(absDiffMs / 60000);
     const diffHours = Math.floor(diffMins / 60);
-    
-    if (diffMins < 60) {
+    const diffDays = Math.floor(diffHours / 24);
+
+    if (diffMs < 0) {
+      // Future date (timezone mismatch) - just show the date
+      return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+    } else if (diffMins < 1) {
+      return 'Just now';
+    } else if (diffMins < 60) {
       return `${diffMins}m ago`;
     } else if (diffHours < 24) {
       return `${diffHours}h ago`;
+    } else if (diffDays < 7) {
+      return `${diffDays}d ago`;
     } else {
       return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
     }
@@ -82,11 +94,11 @@ export const NewsFeed: React.FC<NewsFeedProps> = ({ articles }) => {
         <span>📰</span>
         <span>News Feed</span>
         <span className="text-sm font-normal text-terminal-text-dim ml-auto">
-          Last 24 hours
+          {articles.length} articles &middot; Last 24 hours
         </span>
       </h2>
-      
-      <div className="space-y-3 max-h-96 overflow-y-auto">
+
+      <div className="space-y-3 max-h-[600px] overflow-y-auto">
         {articles.map((article) => (
           <div 
             key={article.id}

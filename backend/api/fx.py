@@ -5,6 +5,7 @@ FX Rate API Endpoints
 from datetime import datetime, timedelta
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
+from modules.utils.timezone import get_current_time
 from sqlalchemy.orm import Session
 
 from modules.data_storage.database import get_db
@@ -22,7 +23,7 @@ async def get_fx_rates(db: Session = Depends(get_db)):
     rates = storage.get_latest_rates()
     
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "count": len(rates),
         "rates": [
             {
@@ -119,7 +120,7 @@ async def get_fx_summary(db: Session = Depends(get_db)):
 
 @router.get("/movers")
 async def get_top_movers(
-    period: str = Query(default="24h", regex="^(1h|24h|1w)$"),
+    period: str = Query(default="24h", pattern="^(1h|24h|1w)$"),
     db: Session = Depends(get_db)
 ):
     """

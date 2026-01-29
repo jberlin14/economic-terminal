@@ -7,6 +7,7 @@ Leader detection, institution tracking, event filtering, and advanced search.
 from datetime import datetime
 from typing import Optional, List
 from fastapi import APIRouter, Depends, HTTPException, Query
+from modules.utils.timezone import get_current_time
 from sqlalchemy.orm import Session
 
 from modules.data_storage.database import get_db
@@ -63,7 +64,7 @@ async def search_news(
     )
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "count": len(articles),
         "filters": {
             "query": q,
@@ -102,7 +103,7 @@ async def get_all_leaders(db: Session = Depends(get_db)):
         all_leaders.append(leader_info)
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "total_leaders": len(all_leaders),
         "trending": trending[:20],  # Top 20
         "all_leaders": sorted(all_leaders, key=lambda x: x['recent_mentions'], reverse=True)
@@ -135,7 +136,7 @@ async def get_leader_articles(
     articles = search.get_by_leader(leader_key, hours=hours, limit=limit)
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "leader": leader_info,
         "count": len(articles),
         "articles": articles
@@ -161,7 +162,7 @@ async def get_institution_articles(
     articles = search.get_by_institution(institution.upper(), hours=hours, limit=limit)
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "institution": institution.upper(),
         "count": len(articles),
         "articles": articles
@@ -191,7 +192,7 @@ async def get_event_articles(
     articles = search.get_by_event_type(event_type.upper(), hours=hours, limit=limit)
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "event_type": event_type.upper(),
         "count": len(articles),
         "articles": articles
@@ -217,7 +218,7 @@ async def get_critical_by_country(
     articles = search.get_critical_by_country(country.upper(), hours=hours, limit=limit)
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "country": country.upper(),
         "count": len(articles),
         "articles": articles
@@ -247,7 +248,7 @@ async def get_news_dashboard(
     trending_events = search.get_trending_events(hours=hours)
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "hours": hours,
         "summary": summary,
         "trending_leaders": trending_leaders[:10],
@@ -277,7 +278,7 @@ async def get_leader_timeline(
     timeline = search.get_leader_timeline(leader_key, hours=hours)
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "leader": leader_info,
         "count": len(timeline),
         "timeline": timeline
@@ -302,7 +303,7 @@ async def get_news_stats(db: Session = Depends(get_db)):
     recent_7d = search.get_dashboard_summary(hours=168)
 
     return {
-        "timestamp": datetime.utcnow().isoformat(),
+        "timestamp": get_current_time().isoformat(),
         "configuration": {
             "total_rss_feeds": len(RSS_FEEDS),
             "total_leaders": len(LEADERS),

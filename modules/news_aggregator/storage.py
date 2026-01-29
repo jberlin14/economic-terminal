@@ -13,6 +13,7 @@ from loguru import logger
 
 from ..data_storage.schema import NewsArticle as NewsArticleDB
 from ..data_storage.database import get_db_context
+from ..utils.timezone import get_current_time
 from .models import NewsArticle, NewsFeed
 
 
@@ -55,7 +56,7 @@ class NewsStorage:
                 source=article.source,
                 url=article.url,
                 published_at=article.published_at,
-                fetched_at=datetime.utcnow(),
+                fetched_at=get_current_time(),
                 country_tags=article.country_tags,
                 category=article.category,
                 severity=article.severity,
@@ -123,7 +124,7 @@ class NewsStorage:
     ) -> List[NewsArticleDB]:
         """Get recent news articles."""
         db = self._get_db()
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        cutoff = get_current_time() - timedelta(hours=hours)
 
         query = (
             db.query(NewsArticleDB)
@@ -152,7 +153,7 @@ class NewsStorage:
     ) -> List[NewsArticleDB]:
         """Get news articles for a specific country."""
         db = self._get_db()
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        cutoff = get_current_time() - timedelta(hours=hours)
 
         return (
             db.query(NewsArticleDB)
@@ -171,7 +172,7 @@ class NewsStorage:
     ) -> List[NewsArticleDB]:
         """Get news articles from a specific source."""
         db = self._get_db()
-        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        cutoff = get_current_time() - timedelta(hours=hours)
 
         return (
             db.query(NewsArticleDB)
@@ -185,7 +186,7 @@ class NewsStorage:
     def cleanup_old_news(self, days: int = 30) -> int:
         """Remove news older than specified days."""
         db = self._get_db()
-        cutoff = datetime.utcnow() - timedelta(days=days)
+        cutoff = get_current_time() - timedelta(days=days)
 
         deleted = (
             db.query(NewsArticleDB)

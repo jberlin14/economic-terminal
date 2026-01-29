@@ -14,7 +14,7 @@ import aiohttp
 import yfinance as yf
 from loguru import logger
 
-from .config import FX_PAIRS, DXY_CONFIG, ALPHA_VANTAGE_API_KEY
+from .config import FX_PAIRS, DXY_CONFIG, ALPHA_VANTAGE_API_KEY, get_decimal_places
 from .rate_calculator import RateCalculator
 from .models import FXRateData, FXUpdate
 
@@ -50,7 +50,40 @@ class FXDataFetcher:
             self.call_count = 0
             self.last_reset = today
         return self.call_count < 500
-    
+
+    def _validate_rate(self, pair: str, rate: float) -> bool:
+        """
+        Validate that a rate is within reasonable bounds for the given pair.
+        Rejects clearly corrupted values (e.g., USD/JPY = 0.006 instead of ~150).
+        """
+        # Expected ranges: (min, max) for each pair in USD/XXX convention
+        RATE_BOUNDS = {
+            'USD/EUR': (0.5, 1.5),
+            'USD/GBP': (0.5, 1.5),
+            'USD/JPY': (80.0, 300.0),
+            'USD/CAD': (1.0, 2.0),
+            'USD/AUD': (0.5, 1.5),
+            'USD/NZD': (0.5, 2.0),
+            'USD/MXN': (10.0, 30.0),
+            'USD/BRL': (3.0, 10.0),
+            'USD/ARS': (50.0, 5000.0),
+            'USD/TWD': (25.0, 40.0),
+            'USDX': (70.0, 130.0),
+        }
+
+        bounds = RATE_BOUNDS.get(pair)
+        if bounds is None:
+            return True  # Unknown pair, allow through
+
+        min_rate, max_rate = bounds
+        if min_rate <= rate <= max_rate:
+            return True
+
+        logger.error(
+            f"Rate {rate} for {pair} outside expected bounds [{min_rate}, {max_rate}]"
+        )
+        return False
+
     async def fetch_alpha_vantage(
         self,
         from_currency: str,
@@ -195,10 +228,16 @@ class FXDataFetcher:
         if self.api_key and self._check_rate_limit():
             av_currency = config.get('alpha_vantage')
             if av_currency:
-                rate = await self.fetch_alpha_vantage(av_currency, 'USD')
-                if rate:
+                av_rate = await self.fetch_alpha_vantage(av_currency, 'USD')
+                if av_rate and av_rate > 0:
+                    # Alpha Vantage ALWAYS returns XXX/USD format (how many USD per 1 unit of foreign currency)
+                    # We need to invert to get USD/XXX format before applying config invert logic
+                    # This makes AV output match Yahoo's format for pairs where Yahoo returns XXX/USD (like EURUSD=X)
+                    # For pairs where Yahoo returns USD/XXX directly (like JPY=X), the config invert=False
+                    # handles it, but AV still gives XXX/USD, so we need to invert here
+                    rate = 1.0 / av_rate
                     source = 'alpha_vantage'
-                    logger.debug(f"Fetched {pair} from Alpha Vantage: {rate}")
+                    logger.debug(f"Fetched {pair} from Alpha Vantage: {av_rate} (XXX/USD) -> {rate} (USD/XXX)")
         
         # Fallback to Yahoo Finance
         if rate is None:
@@ -218,10 +257,22 @@ class FXDataFetcher:
         if rate is None:
             logger.error(f"Failed to fetch {pair} from all sources")
             return None
-        
-        # Convert to USD/XXX convention
-        _, converted_rate = RateCalculator.convert_to_usd_base(pair, rate)
-        
+
+        # Convert to USD/XXX convention based on source
+        if source == 'alpha_vantage':
+            # Alpha Vantage rates are already inverted above to USD/XXX
+            # Just apply decimal rounding
+            decimals = get_decimal_places(pair)
+            converted_rate = round(rate, decimals)
+        else:
+            # Yahoo Finance - use config invert flag
+            _, converted_rate = RateCalculator.convert_to_usd_base(pair, rate)
+
+        # Validate rate is reasonable (basic sanity check)
+        if not self._validate_rate(pair, converted_rate):
+            logger.warning(f"Rate validation failed for {pair}: {converted_rate}")
+            return None
+
         return FXRateData(
             pair=pair,
             rate=converted_rate,

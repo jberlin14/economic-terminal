@@ -21,13 +21,6 @@ from .leader_detector import LeaderDetector
 from .config import RSS_FEEDS as CONFIGURED_RSS_FEEDS
 
 
-# RSS Feed sources (no API key required) - DEPRECATED, use config.py
-RSS_FEEDS = {
-    'bloomberg': 'https://feeds.bloomberg.com/markets/news.rss',
-    'cnbc': 'https://www.cnbc.com/id/20910258/device/rss/rss.html',
-    'yahoo': 'https://finance.yahoo.com/news/rssindex'
-}
-
 # Country keywords for tagging
 COUNTRY_KEYWORDS = {
     'US': ['united states', 'u.s.', 'usa', 'america', 'federal reserve', 'fed', 'treasury', 'dollar', 'washington', 'white house'],
@@ -158,6 +151,9 @@ class RSSFetcher:
             all_country_tags = list(set(country_tags_legacy + analysis['countries']))
             all_actions = analysis['actions']['critical'] + analysis['actions']['high']
 
+            # Calculate relevance score
+            relevance = self._calculate_relevance_score(headline, summary, analysis)
+
             article = NewsArticle(
                 headline=headline,
                 source=source,
@@ -168,6 +164,7 @@ class RSSFetcher:
                 severity=analysis['severity'],
                 summary=summary[:500] if summary else None,
                 keyword_matches=keyword_matches,
+                relevance_score=relevance,
                 # New fields from leader detection
                 leader_mentions=analysis['leader_keys'],
                 institutions=analysis['institutions'],
@@ -180,6 +177,74 @@ class RSSFetcher:
         except Exception as e:
             logger.error(f"Error parsing entry: {e}")
             return None
+
+    def _calculate_relevance_score(
+        self, headline: str, summary: str, analysis: Dict[str, Any]
+    ) -> float:
+        """
+        Calculate relevance score for the Economic Terminal's focus areas.
+
+        Higher scores for: bonds, rates, Fed, trade, geopolitics, government.
+        Lower scores for: individual stocks, equities, IPOs, earnings, crypto.
+        """
+        text = f"{headline} {summary}".lower()
+        score = 50.0  # Baseline
+
+        # --- BOOST: topics the user cares about ---
+        high_value_terms = [
+            'treasury', 'treasuries', 'bond', 'bonds', 'yield', 'yields',
+            'interest rate', 'rate cut', 'rate hike', 'rate decision',
+            'federal reserve', 'fed ', 'fomc', 'monetary policy',
+            'central bank', 'ecb', 'boj', 'boe',
+            'tariff', 'trade war', 'trade policy', 'trade deal', 'trade deficit',
+            'sanctions', 'embargo', 'export controls',
+            'geopolitical', 'nato', 'military', 'defense',
+            'government', 'congress', 'senate', 'white house', 'executive order',
+            'fiscal policy', 'debt ceiling', 'budget', 'deficit', 'spending bill',
+            'inflation', 'cpi', 'ppi', 'gdp', 'employment', 'jobs report',
+            'unemployment', 'nonfarm', 'payrolls', 'retail sales',
+            'recession', 'economic growth', 'consumer confidence',
+            'credit spread', 'default', 'downgrade', 'sovereign debt',
+            'currency', 'dollar', 'forex', 'exchange rate',
+        ]
+        for term in high_value_terms:
+            if term in text:
+                score += 8.0
+
+        # Extra boost for leader/institution mentions
+        if analysis.get('leader_keys'):
+            score += 10.0
+        if analysis.get('institutions'):
+            score += 10.0
+
+        # Boost based on severity
+        severity = analysis.get('severity', 'LOW')
+        if severity == 'CRITICAL':
+            score += 20.0
+        elif severity == 'HIGH':
+            score += 10.0
+        elif severity == 'MEDIUM':
+            score += 5.0
+
+        # --- PENALIZE: topics the user cares less about ---
+        low_value_terms = [
+            'stock pick', 'buy the dip', 'top stocks', 'best stocks',
+            'ipo', 'initial public offering', 'going public',
+            'earnings report', 'earnings beat', 'earnings miss',
+            'quarterly results', 'revenue beat', 'profit margin',
+            'share price', 'stock price', 'market cap',
+            'analyst upgrade', 'analyst downgrade', 'price target',
+            'dividend', 'stock split', 'buyback',
+            'tech stocks', 'meme stock', 'penny stock',
+            'crypto', 'bitcoin', 'ethereum', 'nft', 'dogecoin',
+            'personal finance', 'retirement', '401k', 'savings account',
+        ]
+        for term in low_value_terms:
+            if term in text:
+                score -= 12.0
+
+        # Cap score between 0 and 100
+        return max(0.0, min(100.0, round(score, 1)))
 
     def _parse_date(self, entry: Any) -> datetime:
         """Parse entry publish date."""
@@ -269,7 +334,7 @@ class RSSFetcher:
 
     def fetch_all_feeds(self, max_articles: int = 20) -> List[NewsFeed]:
         """
-        Fetch all RSS feeds.
+        Fetch all configured RSS feeds.
 
         Args:
             max_articles: Maximum articles per feed
@@ -279,7 +344,8 @@ class RSSFetcher:
         """
         feeds = []
 
-        for source, url in RSS_FEEDS.items():
+        for source, config in CONFIGURED_RSS_FEEDS.items():
+            url = config['url']
             feed = self.fetch_feed(source, url, max_articles)
             if feed:
                 feeds.append(feed)
@@ -290,6 +356,6 @@ class RSSFetcher:
         """Check RSS fetcher status."""
         return {
             'feedparser_available': FEEDPARSER_AVAILABLE,
-            'sources': list(RSS_FEEDS.keys()),
-            'source_count': len(RSS_FEEDS)
+            'sources': list(CONFIGURED_RSS_FEEDS.keys()),
+            'source_count': len(CONFIGURED_RSS_FEEDS)
         }

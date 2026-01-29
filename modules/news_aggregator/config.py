@@ -29,11 +29,6 @@ FINANCIAL_FEEDS = {
 
 # Geopolitical & Defense
 GEOPOLITICAL_FEEDS = {
-    'isw': {
-        'url': 'https://www.understandingwar.org/rss.xml',
-        'name': 'Institute for Study of War',
-        'category': 'GEOPOLITICAL'
-    },
     'war_on_rocks': {
         'url': 'https://warontherocks.com/feed/',
         'name': 'War on the Rocks',
@@ -49,14 +44,14 @@ GEOPOLITICAL_FEEDS = {
         'name': 'Foreign Affairs',
         'category': 'GEOPOLITICAL'
     },
-    'defense_one': {
-        'url': 'https://www.defenseone.com/rss/',
-        'name': 'Defense One',
+    'defense_news': {
+        'url': 'https://www.defensenews.com/arc/outboundfeeds/rss/?outputType=xml',
+        'name': 'Defense News',
         'category': 'GEOPOLITICAL'
     },
-    'csis': {
-        'url': 'https://www.csis.org/analysis/feed',
-        'name': 'CSIS',
+    'brookings': {
+        'url': 'https://www.brookings.edu/feed/',
+        'name': 'Brookings Institution',
         'category': 'GEOPOLITICAL'
     },
 }
@@ -69,7 +64,7 @@ CENTRAL_BANK_FEEDS = {
         'category': 'CENTRAL_BANK'
     },
     'ecb': {
-        'url': 'https://www.ecb.europa.eu/rss/press.html',
+        'url': 'https://www.ecb.europa.eu/rss/press.xml',
         'name': 'ECB',
         'category': 'CENTRAL_BANK'
     },
@@ -94,7 +89,7 @@ CENTRAL_BANK_FEEDS = {
         'category': 'CENTRAL_BANK'
     },
     'rbnz': {
-        'url': 'https://www.rbnz.govt.nz/rss.xml',
+        'url': 'https://www.rbnz.govt.nz/hub/-/media/project/sites/rbnz/files/rss/rbnz-news.xml',
         'name': 'Reserve Bank of New Zealand',
         'category': 'CENTRAL_BANK'
     },
@@ -102,13 +97,13 @@ CENTRAL_BANK_FEEDS = {
 
 # Political News
 POLITICAL_FEEDS = {
-    'reuters_politics': {
-        'url': 'https://www.reutersagency.com/feed/?best-topics=political-general&post_type=best',
-        'name': 'Reuters Politics',
+    'ap_politics': {
+        'url': 'https://feedx.net/rss/ap-politics.xml',
+        'name': 'AP Politics',
         'category': 'POLITICAL'
     },
     'politico': {
-        'url': 'https://www.politico.com/rss/economy.xml',
+        'url': 'https://rss.politico.com/economy.xml',
         'name': 'Politico Economy',
         'category': 'POLITICAL'
     },
@@ -119,12 +114,57 @@ POLITICAL_FEEDS = {
     },
 }
 
+# Fixed Income / Rates / Bond Markets
+FIXED_INCOME_FEEDS = {
+    'ft_markets': {
+        'url': 'https://www.ft.com/rss/home',
+        'name': 'Financial Times',
+        'category': 'FINANCIAL'
+    },
+    'marketwatch': {
+        'url': 'https://feeds.content.dowjones.io/public/rss/mw_bulletins',
+        'name': 'MarketWatch Bulletins',
+        'category': 'FINANCIAL'
+    },
+    'treasury_gov': {
+        'url': 'https://home.treasury.gov/system/files/136/treasury-rss.xml',
+        'name': 'US Treasury',
+        'category': 'ECON'
+    },
+}
+
+# US Government / Trade
+GOVERNMENT_FEEDS = {
+    'white_house': {
+        'url': 'https://www.whitehouse.gov/feed/',
+        'name': 'White House',
+        'category': 'POLITICAL'
+    },
+    'ustr': {
+        'url': 'https://ustr.gov/about-us/policy-offices/press-office/press-releases/feed',
+        'name': 'US Trade Representative',
+        'category': 'POLITICAL'
+    },
+    'cbo': {
+        'url': 'https://www.cbo.gov/publications/all/rss.xml',
+        'name': 'Congressional Budget Office',
+        'category': 'ECON'
+    },
+    'imf_news': {
+        'url': 'https://www.imf.org/en/News/Rss?type=News',
+        'name': 'IMF News',
+        'category': 'ECON'
+    },
+}
+
 # Combine all feeds
 RSS_FEEDS = {
     **FINANCIAL_FEEDS,
     **GEOPOLITICAL_FEEDS,
     **CENTRAL_BANK_FEEDS,
-    **POLITICAL_FEEDS
+    **POLITICAL_FEEDS,
+    **FIXED_INCOME_FEEDS,
+    **GOVERNMENT_FEEDS
 }
 
 
@@ -532,6 +572,29 @@ LEADERS = {
 
 
 # =============================================================================
+# INSTITUTION KEYWORDS (detect institutions without requiring a leader mention)
+# =============================================================================
+
+INSTITUTION_KEYWORDS = {
+    'FED': ['federal reserve', 'the fed ', 'fed holds', 'fed cuts', 'fed raises',
+            'fed chief', 'fed governor', 'fed chair', 'fomc', 'fed officials',
+            'fed meeting', 'fed policy', 'fed signals', 'fed rate'],
+    'ECB': ['european central bank', 'ecb'],
+    'BOE': ['bank of england', 'boe'],
+    'BOJ': ['bank of japan', 'boj'],
+    'BOC': ['bank of canada', 'boc'],
+    'RBA': ['reserve bank of australia', 'rba'],
+    'RBNZ': ['reserve bank of new zealand', 'rbnz'],
+    'PBOC': ['people\'s bank of china', 'pboc'],
+    'BANXICO': ['banxico', 'banco de mexico'],
+    'BCB': ['banco central', 'bcb'],
+    'WHITE_HOUSE': ['white house'],
+    'TREASURY': ['u.s. treasury', 'treasury department', 'treasury secretary'],
+    'IMF': ['international monetary fund', 'imf'],
+}
+
+
+# =============================================================================
 # ACTION KEYWORDS
 # =============================================================================
 
@@ -561,7 +624,9 @@ EVENT_TYPES = {
     'RATE_DECISION': [
         'rate decision', 'rate hike', 'rate cut', 'holds rates', 'keeps rates',
         'basis points', 'bps', 'interest rate decision', 'monetary policy decision',
-        'policy rate', 'raises rates', 'lowers rates', 'rate unchanged'
+        'policy rate', 'raises rates', 'lowers rates', 'rate unchanged',
+        'fomc statement', 'fomc', 'rate steady', 'holds rate', 'kept rate',
+        'rate announcement', 'cuts rate', 'raises rate', 'hiked rate',
     ],
     'TRADE_POLICY': [
         'tariff', 'tariffs', 'trade war', 'trade deal', 'trade agreement',

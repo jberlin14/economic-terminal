@@ -145,26 +145,32 @@ def assess_credit_conditions(
         'alerts': []
     }
     
-    # Check Investment Grade
+    # Check Investment Grade (spread vs 90-day average)
     ig_data = spread_data.get('US_IG') or spread_data.get('BBB_OAS')
     if ig_data:
-        percentile = ig_data.get('percentile_90d', 50)
-        if percentile >= 90:
-            assessment['ig_status'] = 'STRESSED'
-            assessment['stress_level'] = 'ELEVATED'
-        elif percentile >= 75:
-            assessment['ig_status'] = 'ELEVATED'
-    
-    # Check High Yield
+        spread = ig_data.get('spread_bps')
+        avg = ig_data.get('avg_90d')
+        if spread is not None and avg is not None and avg > 0:
+            ratio = spread / avg
+            if ratio >= 1.3:  # 30%+ above 90d avg
+                assessment['ig_status'] = 'STRESSED'
+                assessment['stress_level'] = 'ELEVATED'
+            elif ratio >= 1.15:  # 15%+ above 90d avg
+                assessment['ig_status'] = 'ELEVATED'
+
+    # Check High Yield (spread vs 90-day average)
     hy_data = spread_data.get('US_HY') or spread_data.get('HY_OAS')
     if hy_data:
-        percentile = hy_data.get('percentile_90d', 50)
-        if percentile >= 90:
-            assessment['hy_status'] = 'STRESSED'
-            assessment['stress_level'] = 'HIGH'
-        elif percentile >= 75:
-            assessment['hy_status'] = 'ELEVATED'
-            if assessment['stress_level'] == 'NORMAL':
-                assessment['stress_level'] = 'ELEVATED'
+        spread = hy_data.get('spread_bps')
+        avg = hy_data.get('avg_90d')
+        if spread is not None and avg is not None and avg > 0:
+            ratio = spread / avg
+            if ratio >= 1.3:
+                assessment['hy_status'] = 'STRESSED'
+                assessment['stress_level'] = 'HIGH'
+            elif ratio >= 1.15:
+                assessment['hy_status'] = 'ELEVATED'
+                if assessment['stress_level'] == 'NORMAL':
+                    assessment['stress_level'] = 'ELEVATED'
     
     return assessment
