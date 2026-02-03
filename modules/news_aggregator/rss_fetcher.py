@@ -52,12 +52,42 @@ MEDIUM_KEYWORDS = [
 
 # Category keywords
 CATEGORY_KEYWORDS = {
-    'ECON': ['gdp', 'employment', 'jobs', 'unemployment', 'inflation', 'cpi', 'ppi', 'retail sales'],
-    'FX': ['currency', 'dollar', 'euro', 'yen', 'pound', 'forex', 'exchange rate'],
-    'POLITICAL': ['election', 'congress', 'senate', 'president', 'government', 'policy', 'tariff', 'trade'],
-    'CREDIT': ['bond', 'debt', 'credit', 'treasury', 'yield', 'spread', 'default'],
-    'CENTRAL_BANK': ['fed', 'federal reserve', 'ecb', 'boj', 'boe', 'central bank', 'interest rate', 'monetary policy']
+    'ECON': ['gdp', 'employment', 'jobs', 'unemployment', 'inflation', 'cpi', 'ppi', 'retail sales',
+             'consumer confidence', 'consumer spending', 'economic growth', 'nonfarm', 'payrolls',
+             'housing starts', 'industrial production', 'pmi', 'ism'],
+    'FX': ['currency', 'dollar', 'euro', 'yen', 'pound', 'forex', 'exchange rate', 'fx ',
+           'devaluation', 'appreciation', 'depreciation'],
+    'POLITICAL': ['election', 'congress', 'senate', 'government', 'policy',
+                  'legislation', 'bipartisan', 'democrat', 'republican', 'vote', 'referendum'],
+    'CREDIT': ['bond', 'debt', 'credit', 'treasury', 'yield', 'spread', 'default',
+               'downgrade', 'upgrade', 'sovereign debt', 'corporate bond', 'high yield',
+               'investment grade', 'credit rating'],
+    'CENTRAL_BANK': ['fed', 'federal reserve', 'ecb', 'boj', 'boe', 'central bank', 'interest rate',
+                     'monetary policy', 'fomc', 'rate decision', 'rate cut', 'rate hike', 'rate hold',
+                     'rate steady', 'dovish', 'hawkish', 'quantitative', 'taper'],
+    'GEOPOLITICAL': ['geopolitical', 'nato', 'military', 'defense', 'troops', 'missile',
+                     'invasion', 'conflict', 'war ', 'ceasefire', 'nuclear', 'weapon'],
+    'TRADE_POLICY': ['tariff', 'trade war', 'trade deal', 'trade policy', 'trade deficit',
+                     'sanctions', 'embargo', 'export controls', 'import duty', 'trade agreement',
+                     'usmca', 'nafta', 'wto'],
 }
+
+# Map event types from leader_detector to display categories
+EVENT_TO_CATEGORY = {
+    'RATE_DECISION': 'CENTRAL_BANK',
+    'TRADE_POLICY': 'TRADE_POLICY',
+    'SANCTIONS': 'TRADE_POLICY',
+    'MILITARY': 'GEOPOLITICAL',
+    'ELECTION': 'POLITICAL',
+    'ECONOMIC_DATA': 'ECON',
+    'MARKET_MOVE': 'CREDIT',
+    'CURRENCY': 'FX',
+    'DEBT_CREDIT': 'CREDIT',
+    'DISASTER': 'GEOPOLITICAL',
+}
+
+# Sources that are inherently central bank feeds
+CENTRAL_BANK_SOURCES = {'fed', 'ecb', 'boe', 'boj', 'boc', 'rba', 'rbnz'}
 
 
 class RSSFetcher:
@@ -93,11 +123,16 @@ class RSSFetcher:
                 logger.warning(f"Feed parsing error for {source}: {feed.bozo_exception}")
 
             articles = []
+            now = datetime.utcnow()
             for entry in feed.entries[:max_articles]:
                 try:
                     # Parse article
                     article = self._parse_entry(entry, source)
                     if article:
+                        # Skip articles with future dates (e.g., BOC schedule entries)
+                        if article.published_at > now:
+                            logger.debug(f"Skipping future-dated article: {article.headline[:50]}...")
+                            continue
                         articles.append(article)
                 except Exception as e:
                     logger.error(f"Error parsing entry from {source}: {e}")
@@ -154,13 +189,22 @@ class RSSFetcher:
             # Calculate relevance score
             relevance = self._calculate_relevance_score(headline, summary, analysis)
 
+            # Determine best category
+            category = self._resolve_category(
+                source=source,
+                events=analysis.get('events', []),
+                legacy_category=category_legacy,
+                headline=headline,
+                summary=summary or '',
+            )
+
             article = NewsArticle(
                 headline=headline,
                 source=source,
                 url=url,
                 published_at=published_at,
                 country_tags=all_country_tags,
-                category=analysis.get('events', [category_legacy])[0] if analysis.get('events') else category_legacy,
+                category=category,
                 severity=analysis['severity'],
                 summary=summary[:500] if summary else None,
                 keyword_matches=keyword_matches,
@@ -245,6 +289,48 @@ class RSSFetcher:
 
         # Cap score between 0 and 100
         return max(0.0, min(100.0, round(score, 1)))
+
+    def _resolve_category(self, source: str, events: List[str], legacy_category: str, headline: str = '', summary: str = '') -> str:
+        """Determine the best display category for an article.
+
+        Priority: source type > event mapping > headline keywords > summary keywords.
+        Headline matches are weighted 3x more than summary matches to avoid
+        miscategorization from tangential mentions in summaries.
+        """
+        # Central bank sources always get CENTRAL_BANK
+        if source in CENTRAL_BANK_SOURCES:
+            return 'CENTRAL_BANK'
+
+        # Collect candidate categories from events
+        event_categories = []
+        for event in events:
+            mapped = EVENT_TO_CATEGORY.get(event)
+            if mapped:
+                event_categories.append(mapped)
+
+        # Score categories primarily from headline, summary is tiebreaker only
+        headline_lower = headline.lower() if headline else ''
+        summary_lower = summary.lower() if summary else ''
+
+        cat_scores: Dict[str, float] = {}
+        for cat, keywords in CATEGORY_KEYWORDS.items():
+            headline_hits = sum(1 for kw in keywords if kw in headline_lower)
+            summary_hits = sum(1 for kw in keywords if kw in summary_lower)
+            # Headline is primary signal; summary only counts if headline also matches
+            if headline_hits > 0:
+                cat_scores[cat] = (headline_hits * 3) + summary_hits
+            elif summary_hits >= 3:
+                # Strong summary signal (3+ keyword matches) still counts but weakly
+                cat_scores[cat] = summary_hits * 0.5
+
+        # Boost categories that also have event detection support
+        for cat in event_categories:
+            cat_scores[cat] = cat_scores.get(cat, 0) + 5
+
+        if cat_scores:
+            return max(cat_scores, key=cat_scores.get)
+
+        return 'ECON'  # Default instead of GENERAL
 
     def _parse_date(self, entry: Any) -> datetime:
         """Parse entry publish date."""

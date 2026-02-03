@@ -438,7 +438,7 @@ class QueryHelper:
             'recent_releases': [r.to_dict() for r in self.get_recent_releases(days=3)],
             'upcoming_releases': [r.to_dict() for r in self.get_upcoming_releases(days=7)],
             'active_alerts': [a.to_dict() for a in self.get_active_alerts()],
-            'recent_news': [n.to_dict() for n in self.get_recent_news(hours=24, limit=30, sort_by_relevance=True)],
+            'recent_news': [n.to_dict() for n in self.get_recent_news(hours=24, limit=100, sort_by_relevance=True)],
             'system_health': [h.to_dict() for h in self.get_system_health()],
             'timestamp': datetime.utcnow().isoformat()
         }

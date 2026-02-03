@@ -1,5 +1,63 @@
-import React from 'react';
+import React, { useState, useMemo } from 'react';
 import { ExternalLink, Clock } from 'lucide-react';
+
+const CATEGORY_TABS = [
+  { key: 'ALL', label: 'ALL' },
+  { key: 'CENTRAL_BANK', label: 'CENTRAL BANK' },
+  { key: 'GEOPOLITICAL', label: 'GEOPOLITICAL' },
+  { key: 'TRADE_POLICY', label: 'TRADE' },
+  { key: 'ECON', label: 'ECON' },
+  { key: 'POLITICAL', label: 'POLITICAL' },
+  { key: 'FX', label: 'FX' },
+  { key: 'CREDIT', label: 'CREDIT' },
+] as const;
+
+const SEVERITY_TABS = [
+  { key: 'ALL', label: 'ALL', activeClass: 'bg-neutral text-white', inactiveClass: 'border-neutral/40 text-neutral' },
+  { key: 'CRITICAL', label: 'CRITICAL', activeClass: 'bg-critical text-white', inactiveClass: 'border-critical/40 text-critical' },
+  { key: 'HIGH', label: 'HIGH', activeClass: 'bg-warning text-black', inactiveClass: 'border-warning/40 text-warning' },
+  { key: 'MEDIUM', label: 'MEDIUM', activeClass: 'bg-neutral text-white', inactiveClass: 'border-neutral/40 text-neutral' },
+] as const;
+
+const CATEGORY_DISPLAY: Record<string, string> = {
+  ECON: 'ECON',
+  FX: 'FX',
+  POLITICAL: 'POLITICAL',
+  CREDIT: 'CREDIT',
+  CENTRAL_BANK: 'CENTRAL BANK',
+  GEOPOLITICAL: 'GEOPOLITICAL',
+  TRADE_POLICY: 'TRADE',
+  CURRENCY: 'FX',
+  CAT: 'CRITICAL',
+};
+
+const SOURCE_DISPLAY: Record<string, string> = {
+  bloomberg: 'Bloomberg',
+  cnbc: 'CNBC',
+  yahoo: 'Yahoo Finance',
+  ft_markets: 'Financial Times',
+  marketwatch: 'MarketWatch',
+  the_hill: 'The Hill',
+  politico: 'Politico',
+  foreign_policy: 'Foreign Policy',
+  foreign_affairs: 'Foreign Affairs',
+  defense_news: 'Defense News',
+  war_on_rocks: 'War on the Rocks',
+  brookings: 'Brookings',
+  fed: 'Federal Reserve',
+  ecb: 'ECB',
+  boe: 'Bank of England',
+  boj: 'Bank of Japan',
+  boc: 'Bank of Canada',
+  rba: 'RBA',
+  rbnz: 'RBNZ',
+  ap_politics: 'AP News',
+  treasury_gov: 'US Treasury',
+  white_house: 'White House',
+  ustr: 'USTR',
+  cbo: 'CBO',
+  imf: 'IMF',
+};
 
 interface NewsArticle {
   id: number;
@@ -21,6 +79,27 @@ interface NewsFeedProps {
 }
 
 export const NewsFeed: React.FC<NewsFeedProps> = ({ articles }) => {
+  const [activeCategory, setActiveCategory] = useState<string>('ALL');
+  const [activeSeverity, setActiveSeverity] = useState<string>('ALL');
+
+  const categoryCounts = useMemo(() => {
+    const counts: Record<string, number> = {};
+    for (const a of articles) {
+      counts[a.category] = (counts[a.category] || 0) + 1;
+    }
+    return counts;
+  }, [articles]);
+
+  const filteredArticles = useMemo(() => {
+    return articles.filter((a) => {
+      if (activeCategory !== 'ALL' && a.category !== activeCategory) return false;
+      if (activeSeverity !== 'ALL' && a.severity !== activeSeverity) return false;
+      return true;
+    });
+  }, [articles, activeCategory, activeSeverity]);
+
+  const isFiltered = activeCategory !== 'ALL' || activeSeverity !== 'ALL';
+
   const getSeverityBadge = (severity: string) => {
     switch (severity) {
       case 'CRITICAL':
@@ -80,7 +159,7 @@ export const NewsFeed: React.FC<NewsFeedProps> = ({ articles }) => {
   if (articles.length === 0) {
     return (
       <div className="bg-terminal-panel rounded-lg border border-terminal-border p-6">
-        <h2 className="text-xl font-bold mb-4">📰 News Feed</h2>
+        <h2 className="text-xl font-bold mb-4">News Feed</h2>
         <div className="text-terminal-text-dim text-center py-8">
           No recent news articles
         </div>
@@ -91,16 +170,66 @@ export const NewsFeed: React.FC<NewsFeedProps> = ({ articles }) => {
   return (
     <div className="bg-terminal-panel rounded-lg border border-terminal-border p-6">
       <h2 className="text-xl font-bold mb-4 flex items-center gap-2">
-        <span>📰</span>
         <span>News Feed</span>
         <span className="text-sm font-normal text-terminal-text-dim ml-auto">
-          {articles.length} articles &middot; Last 24 hours
+          {isFiltered ? `${filteredArticles.length} of ${articles.length}` : articles.length} articles &middot; Last 24 hours
         </span>
       </h2>
 
+      {/* Category Filter Tabs */}
+      <div className="flex gap-1.5 mb-2 overflow-x-auto pb-1">
+        {CATEGORY_TABS.map((tab) => {
+          const count = tab.key === 'ALL' ? articles.length : (categoryCounts[tab.key] || 0);
+          return (
+            <button
+              key={tab.key}
+              onClick={() => setActiveCategory(tab.key)}
+              className={`px-2.5 py-1 rounded text-xs font-mono whitespace-nowrap transition-colors ${
+                activeCategory === tab.key
+                  ? 'bg-neutral text-white'
+                  : 'bg-terminal-border text-terminal-text-dim hover:text-terminal-text'
+              }`}
+            >
+              {tab.label}
+              <span className={`ml-1 ${activeCategory === tab.key ? 'text-white/60' : 'text-terminal-text-dim/60'}`}>
+                {count}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+
+      {/* Severity Filter */}
+      <div className="flex gap-1.5 mb-3">
+        {SEVERITY_TABS.map((tab) => (
+          <button
+            key={tab.key}
+            onClick={() => setActiveSeverity(tab.key)}
+            className={`px-2 py-0.5 rounded text-xs font-mono transition-colors ${
+              activeSeverity === tab.key
+                ? tab.activeClass
+                : `border ${tab.inactiveClass} bg-transparent hover:bg-terminal-border`
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+
       <div className="space-y-3 max-h-[600px] overflow-y-auto">
-        {articles.map((article) => (
-          <div 
+        {filteredArticles.length === 0 && isFiltered && (
+          <div className="text-center py-8">
+            <p className="text-terminal-text-dim text-sm mb-2">No articles match current filters</p>
+            <button
+              onClick={() => { setActiveCategory('ALL'); setActiveSeverity('ALL'); }}
+              className="text-xs text-neutral hover:text-chart-blue transition-colors font-mono"
+            >
+              Clear filters
+            </button>
+          </div>
+        )}
+        {filteredArticles.map((article) => (
+          <div
             key={article.id}
             className="p-3 rounded-lg bg-terminal-dark border border-terminal-border hover:border-neutral transition-colors"
           >
@@ -112,29 +241,29 @@ export const NewsFeed: React.FC<NewsFeedProps> = ({ articles }) => {
                   <span className={`px-2 py-0.5 rounded text-xs font-bold ${getSeverityBadge(article.severity)}`}>
                     {article.severity}
                   </span>
-                  
+
                   {/* Category */}
                   <span className={`text-xs font-mono ${getCategoryColor(article.category)}`}>
-                    {article.category}
+                    {CATEGORY_DISPLAY[article.category] || article.category}
                   </span>
-                  
+
                   {/* Source */}
                   <span className="text-xs text-terminal-text-dim">
-                    {article.source}
+                    {SOURCE_DISPLAY[article.source] || article.source}
                   </span>
-                  
+
                   {/* Time */}
                   <span className="text-xs text-terminal-text-dim flex items-center gap-1 ml-auto">
                     <Clock className="w-3 h-3" />
                     {formatTime(article.published_at)}
                   </span>
                 </div>
-                
+
                 {/* Headline */}
                 <div className="font-medium text-sm leading-tight">
                   {article.headline}
                 </div>
-                
+
                 {/* Country Tags */}
                 {article.country_tags && article.country_tags.length > 0 && (
                   <div className="flex gap-1 mt-2">
@@ -204,10 +333,10 @@ export const NewsFeed: React.FC<NewsFeedProps> = ({ articles }) => {
                   </div>
                 )}
               </div>
-              
+
               {/* External Link */}
               {article.url && (
-                <a 
+                <a
                   href={article.url}
                   target="_blank"
                   rel="noopener noreferrer"

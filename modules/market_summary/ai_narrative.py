@@ -1236,7 +1236,7 @@ INSTRUCTIONS:
             client = self._get_client()
 
             message = client.messages.create(
-                model="claude-sonnet-4-20250514",
+                model="claude-sonnet-4-5-20250929",
                 max_tokens=1500,
                 messages=[
                     {"role": "user", "content": user_message}
@@ -1249,7 +1249,7 @@ INSTRUCTIONS:
             result = {
                 "narrative": narrative,
                 "generated_at": get_current_time().isoformat(),
-                "model": "claude-sonnet-4-20250514",
+                "model": "claude-sonnet-4-5-20250929",
                 "tokens_used": message.usage.input_tokens + message.usage.output_tokens,
                 "indicators_count": len(context.get('indicators', {})),
                 "news_count": len(context.get('news', [])),

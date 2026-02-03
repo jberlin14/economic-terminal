@@ -176,9 +176,15 @@ class LeaderDetector:
             text_lower = text.lower()
             for inst, keywords in INSTITUTION_KEYWORDS.items():
                 for kw in keywords:
-                    if kw in text_lower:
-                        institutions.append(inst)
-                        break
+                    # Use word-boundary regex for short keywords to avoid false positives
+                    if len(kw) <= 4:
+                        if re.search(r'\b' + re.escape(kw) + r'\b', text_lower):
+                            institutions.append(inst)
+                            break
+                    else:
+                        if kw in text_lower:
+                            institutions.append(inst)
+                            break
 
         return list(set(institutions))
 
@@ -293,6 +299,10 @@ class LeaderDetector:
         tags.extend(events)
         tags.extend([key.upper() for key in leader_keys])
         tags = list(set(tags))  # Remove duplicates
+
+        # Boost severity if institutions detected but severity is LOW
+        if institutions and severity == 'LOW':
+            severity = 'MEDIUM'
 
         return {
             'leaders': leaders_details,

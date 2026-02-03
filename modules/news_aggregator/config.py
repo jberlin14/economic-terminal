@@ -576,9 +576,11 @@ LEADERS = {
 # =============================================================================
 
 INSTITUTION_KEYWORDS = {
-    'FED': ['federal reserve', 'the fed ', 'fed holds', 'fed cuts', 'fed raises',
-            'fed chief', 'fed governor', 'fed chair', 'fomc', 'fed officials',
-            'fed meeting', 'fed policy', 'fed signals', 'fed rate'],
+    'FED': ['federal reserve', 'federal open market committee', 'the fed',
+            'fed holds', 'fed cuts', 'fed raises', 'fed chief', 'fed governor',
+            'fed chair', 'fomc', 'fed officials', 'fed meeting', 'fed policy',
+            'fed signals', 'fed rate', 'fed pick', 'fed nominee', 'dovish fed',
+            'hawkish fed', 'ahead of fed', 'fed minutes', 'fed statement'],
     'ECB': ['european central bank', 'ecb'],
     'BOE': ['bank of england', 'boe'],
     'BOJ': ['bank of japan', 'boj'],
@@ -631,7 +633,7 @@ EVENT_TYPES = {
     'TRADE_POLICY': [
         'tariff', 'tariffs', 'trade war', 'trade deal', 'trade agreement',
         'USMCA', 'import duty', 'export ban', 'trade restrictions',
-        'trade negotiations', 'customs', 'quotas'
+        'trade negotiations', 'customs duty', 'customs duties', 'quotas'
     ],
     'SANCTIONS': [
         'sanctions', 'sanctioned', 'embargo', 'asset freeze', 'freezing assets',
