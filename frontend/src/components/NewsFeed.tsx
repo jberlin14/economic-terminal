@@ -56,7 +56,16 @@ const SOURCE_DISPLAY: Record<string, string> = {
   white_house: 'White House',
   ustr: 'USTR',
   cbo: 'CBO',
-  imf: 'IMF',
+  imf_news: 'IMF',
+  imf_weo: 'IMF WEO',
+  bis_press: 'BIS',
+  bis_research: 'BIS Research',
+  bis_speeches: 'BIS Speeches',
+  stl_fed: 'St. Louis Fed',
+  fed_board: 'Fed Board',
+  eia_today: 'EIA',
+  eia_press: 'EIA Press',
+  eia_gas_diesel: 'EIA Fuel Prices',
 };
 
 interface NewsArticle {

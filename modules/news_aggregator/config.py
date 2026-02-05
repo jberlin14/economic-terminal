@@ -157,6 +157,59 @@ GOVERNMENT_FEEDS = {
     },
 }
 
+# Economic Analysis & Research (IMF, World Bank, BIS, OECD, Fed Research)
+ECONOMIC_ANALYSIS_FEEDS = {
+    'imf_weo': {
+        'url': 'https://www.imf.org/en/publications/rss?language=eng&series=World+Economic+Outlook',
+        'name': 'IMF World Economic Outlook',
+        'category': 'ECON'
+    },
+    'bis_press': {
+        'url': 'https://www.bis.org/doclist/all_pressrels.rss',
+        'name': 'BIS Press Releases',
+        'category': 'ECON'
+    },
+    'bis_research': {
+        'url': 'https://www.bis.org/doclist/bis_fsi_publs.rss',
+        'name': 'BIS Research',
+        'category': 'ECON'
+    },
+    'bis_speeches': {
+        'url': 'https://www.bis.org/doclist/cbspeeches.rss',
+        'name': 'Central Bankers Speeches (BIS)',
+        'category': 'CENTRAL_BANK'
+    },
+    'stl_fed': {
+        'url': 'https://research.stlouisfed.org/rss/',
+        'name': 'St. Louis Fed Research',
+        'category': 'ECON'
+    },
+    'fed_board': {
+        'url': 'https://www.federalreserve.gov/feeds/press_all.xml',
+        'name': 'Federal Reserve Board',
+        'category': 'CENTRAL_BANK'
+    },
+}
+
+# Energy & Commodities (EIA, Energy News)
+ENERGY_COMMODITY_FEEDS = {
+    'eia_today': {
+        'url': 'https://www.eia.gov/rss/todayinenergy.xml',
+        'name': 'EIA Today in Energy',
+        'category': 'ECON'
+    },
+    'eia_press': {
+        'url': 'https://www.eia.gov/rss/press_rss.xml',
+        'name': 'EIA Press Releases',
+        'category': 'ECON'
+    },
+    'eia_gas_diesel': {
+        'url': 'https://www.eia.gov/petroleum/gasdiesel/includes/gas_diesel_rss.xml',
+        'name': 'EIA Gasoline & Diesel Prices',
+        'category': 'ECON'
+    },
+}
+
 # Combine all feeds
 RSS_FEEDS = {
     **FINANCIAL_FEEDS,
@@ -164,7 +217,9 @@ RSS_FEEDS = {
     **CENTRAL_BANK_FEEDS,
     **POLITICAL_FEEDS,
     **FIXED_INCOME_FEEDS,
-    **GOVERNMENT_FEEDS
+    **GOVERNMENT_FEEDS,
+    **ECONOMIC_ANALYSIS_FEEDS,
+    **ENERGY_COMMODITY_FEEDS
 }
 
 
