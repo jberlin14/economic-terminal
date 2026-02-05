@@ -8,6 +8,8 @@ focuses on interpretation rather than arithmetic.
 
 import os
 import math
+import hashlib
+import time
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from collections import Counter, defaultdict
@@ -29,6 +31,7 @@ except ImportError:
     logger.warning("Anthropic SDK not installed. AI narrative generation unavailable.")
 
 from modules.utils.timezone import get_current_time
+from .narrative_modes import get_mode_config, get_available_modes
 
 
 # DM vs EM currency classification
@@ -78,6 +81,10 @@ class AIMarketNarrative:
     Pre-computes analytics layer between data gathering and prompt formatting.
     """
 
+    # Class-level cache: {cache_key: (narrative_result, timestamp)}
+    _narrative_cache: Dict[str, tuple[Dict[str, Any], datetime]] = {}
+    _cache_ttl_minutes = 30  # Cache expires after 30 minutes
+
     def __init__(self, db: Session, api_key: Optional[str] = None):
         self.db = db
         load_dotenv(env_path, override=True)
@@ -99,7 +106,7 @@ class AIMarketNarrative:
 
     def _gather_context(self) -> Dict[str, Any]:
         """Gather all relevant data for narrative generation."""
-        return {
+        context = {
             "timestamp": get_current_time().isoformat(),
             "indicators": self._get_economic_indicators(),
             "yields": self._get_yield_data(),
@@ -108,6 +115,11 @@ class AIMarketNarrative:
             "news": self._get_recent_news(),
             "calendar": self._get_upcoming_releases()
         }
+
+        # Compute data quality metrics
+        context["_data_quality"] = self._assess_data_quality(context)
+
+        return context
 
     def _get_economic_indicators(self) -> Dict[str, Any]:
         """Get key economic indicators using DataTransformer for proper calculations."""
@@ -128,11 +140,20 @@ class AIMarketNarrative:
                 "INDPRO": "Industrial Production",
                 "UMCSENT": "Consumer Sentiment (U of M)",
                 "HOUST": "Housing Starts",
-                "ICSA": "Initial Jobless Claims"
+                "ICSA": "Initial Jobless Claims",
+                "VIXCLS": "VIX (Market Volatility Index)",
+                "DCOILWTICO": "WTI Oil Price ($/barrel)",
+                "DCOILBRENTEU": "Brent Oil Price ($/barrel)",
+                "SP500": "S&P 500 Index",
+                "NASDAQCOM": "NASDAQ Composite",
+                "DJIA": "Dow Jones Industrial Average",
+                "JTSJOL": "JOLTS Job Openings",
+                "DGS10": "10-Year Treasury Yield",
+                "DGS2": "2-Year Treasury Yield"
             }
 
             # Series where absolute level change is more meaningful
-            level_change_series = {'FEDFUNDS', 'UNRATE', 'UMCSENT', 'PAYEMS'}
+            level_change_series = {'FEDFUNDS', 'UNRATE', 'UMCSENT', 'PAYEMS', 'VIXCLS', 'DGS10', 'DGS2', 'JTSJOL'}
 
             indicators = {}
             for series_id, name in key_series.items():
@@ -373,6 +394,104 @@ class AIMarketNarrative:
         except Exception as e:
             logger.error(f"Error getting calendar: {e}")
             return []
+
+    def _assess_data_quality(self, context: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Assess data quality and completeness for transparency and debugging.
+
+        Returns metrics on:
+        - Which critical indicators are missing
+        - Data source health
+        - Overall quality score (0-100)
+        """
+        # Critical indicators needed for high-quality analysis
+        critical_indicators = {
+            'CPIAUCSL': 'CPI (Inflation)',
+            'PAYEMS': 'Nonfarm Payrolls',
+            'UNRATE': 'Unemployment Rate',
+            'FEDFUNDS': 'Fed Funds Rate',
+            'DGS10': '10-Year Treasury Yield',
+            'DGS2': '2-Year Treasury Yield',
+        }
+
+        # Important but not critical indicators
+        important_indicators = {
+            'GDP': 'GDP',
+            'VIXCLS': 'VIX',
+            'JTSJOL': 'JOLTS Job Openings',
+            'UMCSENT': 'Consumer Sentiment',
+        }
+
+        indicators = context.get('indicators', {})
+
+        # Check critical indicators
+        missing_critical = []
+        for series_id, name in critical_indicators.items():
+            if series_id not in indicators or indicators[series_id].get('value') is None:
+                missing_critical.append(name)
+
+        # Check important indicators
+        missing_important = []
+        for series_id, name in important_indicators.items():
+            if series_id not in indicators or indicators[series_id].get('value') is None:
+                missing_important.append(name)
+
+        # Check other data sources
+        yields = context.get('yields', {})
+        has_yield_curve = bool(yields.get('curve'))
+
+        fx = context.get('fx', {})
+        has_fx_data = len(fx) > 0
+
+        credit = context.get('credit', {})
+        has_credit_data = len(credit) > 0
+
+        news = context.get('news', [])
+        news_count = len(news)
+        news_health = 'GOOD' if news_count >= 20 else 'DEGRADED' if news_count >= 10 else 'POOR'
+
+        # Compute overall quality score (0-100)
+        score = 100
+        score -= len(missing_critical) * 15  # -15 per missing critical indicator
+        score -= len(missing_important) * 5   # -5 per missing important indicator
+        if not has_yield_curve:
+            score -= 10
+        if not has_fx_data:
+            score -= 5
+        if not has_credit_data:
+            score -= 5
+        if news_count < 10:
+            score -= 10
+        elif news_count < 20:
+            score -= 5
+
+        score = max(0, score)  # Floor at 0
+
+        # Quality level assessment
+        if score >= 90:
+            quality_level = 'EXCELLENT'
+        elif score >= 75:
+            quality_level = 'GOOD'
+        elif score >= 60:
+            quality_level = 'FAIR'
+        elif score >= 40:
+            quality_level = 'DEGRADED'
+        else:
+            quality_level = 'POOR'
+
+        return {
+            'quality_score': score,
+            'quality_level': quality_level,
+            'indicators_available': len(indicators),
+            'indicators_expected': len(critical_indicators) + len(important_indicators),
+            'missing_critical': missing_critical,
+            'missing_important': missing_important,
+            'yield_curve_available': has_yield_curve,
+            'fx_data_available': has_fx_data,
+            'credit_data_available': has_credit_data,
+            'news_count': news_count,
+            'news_health': news_health,
+        }
 
     # ──────────────────────────────────────────────
     # PHASE 2: Analytics Computation
@@ -813,6 +932,7 @@ class AIMarketNarrative:
             data.pop("_df", None)
         yields = context.get("yields", {})
         yields.pop("_history", None)
+        context.pop("_data_quality", None)  # Don't include in prompt
 
     # ──────────────────────────────────────────────
     # PHASE 3: Prompt Formatting (pre-digested briefing)
@@ -826,6 +946,8 @@ class AIMarketNarrative:
         lines.append("=== PRE-DIGESTED MARKET BRIEFING ===")
         lines.append(f"Generated: {context['timestamp']}")
         lines.append(f"Market Regime: {regime.get('regime', 'UNKNOWN')}")
+        lines.append("")
+        lines.append("NOTE: Indicator-specific interpretation guides are inline below with each data point.")
         lines.append("")
 
         # ── Data Quality Alerts ──
@@ -857,6 +979,26 @@ class AIMarketNarrative:
 
         # ── Economic Indicators ──
         lines.append("=== ECONOMIC INDICATORS ===")
+
+        # Indicator-specific interpretation guides (moved from mode instructions)
+        indicator_guides = {
+            'PAYEMS': "The MoM change in thousands IS the headline jobs number (e.g., +200K = 200,000 jobs added).",
+            'FEDFUNDS': "Level change is in percentage points (e.g., -0.25 = 25bp cut). CAUTION: This is a monthly average from FRED — may not reflect very recent rate decisions. Check BREAKING NEWS for recent moves.",
+            'VIXCLS': "Absolute level interpretation: <15 = complacent/calm, 15-20 = normal, 20-30 = elevated/nervous, >30 = fear/panic. Changes signal shifting market sentiment.",
+            'DCOILWTICO': "WTI crude oil price. Sharp moves impact inflation expectations, consumer spending, and EM currencies. Context: geopolitical events, supply/demand shifts.",
+            'DCOILBRENTEU': "Brent crude oil price (global benchmark). Use alongside WTI to gauge global vs US-specific oil dynamics.",
+            'SP500': "S&P 500 equity index. Reflects risk appetite, growth expectations, earnings outlook. Watch for breadth (narrow vs broad rally).",
+            'NASDAQCOM': "NASDAQ Composite (tech-heavy). Sensitive to rate expectations and growth outlook. Divergence from S&P signals sector rotation.",
+            'DJIA': "Dow Jones Industrial Average (blue-chip stocks). More value/cyclical tilt than NASDAQ.",
+            'JTSJOL': "JOLTS Job Openings. High openings = tight labor market (upward wage pressure), declining openings = cooling labor demand (dovish for Fed).",
+            'DGS10': "10-Year Treasury Yield. Signals long-term rate expectations, growth outlook, term premium. Compare to Fed Funds to assess policy stance.",
+            'DGS2': "2-Year Treasury Yield. Closely tracks Fed policy expectations. Watch 2Y-10Y spread for recession signals (inversion).",
+            'UNRATE': "Unemployment Rate. Core labor market health indicator. Rising UNRATE + Sahm Rule = recession risk.",
+            'CPIAUCSL': "Consumer Price Index (inflation). Fed's 2% target is for YoY change. Goods vs services split matters for inflation trajectory.",
+            'GDP': "Real Gross Domestic Product. Quarterly growth rate (annualized). Lagging indicator but critical for recession dating.",
+            'UMCSENT': "University of Michigan Consumer Sentiment. Forward-looking indicator of consumer spending. Divergence from hard data = confidence vs reality gap.",
+        }
+
         for series_id, data in context.get("indicators", {}).items():
             ind_a = ind_analytics.get(series_id, {})
             if not isinstance(ind_a, dict):
@@ -873,9 +1015,6 @@ class AIMarketNarrative:
             freq = data.get("frequency", "")
 
             label_line = f"{data['name']}: {val_str} ({units}, {freq}) as of {data.get('date', '?')}"
-            # Add data lag caveat for FEDFUNDS
-            if series_id == 'FEDFUNDS':
-                label_line += "  [NOTE: monthly average — check news for recent rate decisions]"
             lines.append(label_line)
 
             # Change info
@@ -900,6 +1039,11 @@ class AIMarketNarrative:
 
             if parts:
                 lines.append(f"  {' | '.join(parts)}")
+
+            # Add interpretation guide if available
+            if series_id in indicator_guides:
+                lines.append(f"  → {indicator_guides[series_id]}")
+
             lines.append("")
 
         # Derived metrics
@@ -920,6 +1064,8 @@ class AIMarketNarrative:
         curve = yields.get("curve", {})
         if curve:
             lines.append("=== TREASURY YIELDS ===")
+            lines.append("→ 2Y yield tracks Fed policy expectations. 10Y signals long-term growth/inflation outlook. 2Y-10Y spread: inversion (<0 bps) historically precedes recessions, steepening (>100 bps) = strong growth expectations.")
+            lines.append("")
             lines.append("Current Curve:")
             short = " | ".join(f"{t}: {curve[t]:.2f}%" for t in ['1M', '3M', '6M', '1Y'] if t in curve)
             long = " | ".join(f"{t}: {curve[t]:.2f}%" for t in ['2Y', '5Y', '10Y', '20Y', '30Y'] if t in curve)
@@ -1190,89 +1336,350 @@ class AIMarketNarrative:
         return notes[:5]
 
     # ──────────────────────────────────────────────
+    # Caching Helpers
+    # ──────────────────────────────────────────────
+
+    @classmethod
+    def _compute_cache_key(cls, context_text: str, narrative_type: str) -> str:
+        """
+        Compute a hash of the context + narrative type for cache lookup.
+
+        Uses SHA256 hash of the context text and narrative type. This means
+        if the underlying data (indicators, news, etc.) hasn't changed,
+        we return the cached result instead of calling the API.
+        """
+        cache_input = f"{narrative_type}:{context_text}"
+        return hashlib.sha256(cache_input.encode('utf-8')).hexdigest()
+
+    @classmethod
+    def _get_cached_narrative(cls, cache_key: str) -> Optional[Dict[str, Any]]:
+        """
+        Get cached narrative if it exists and hasn't expired.
+
+        Returns None if cache miss or expired.
+        """
+        if cache_key not in cls._narrative_cache:
+            return None
+
+        cached_result, cached_time = cls._narrative_cache[cache_key]
+        age_minutes = (datetime.utcnow() - cached_time).total_seconds() / 60
+
+        if age_minutes > cls._cache_ttl_minutes:
+            # Expired, remove it
+            del cls._narrative_cache[cache_key]
+            return None
+
+        logger.info(f"Cache HIT (age: {age_minutes:.1f}min, TTL: {cls._cache_ttl_minutes}min)")
+        return cached_result
+
+    @classmethod
+    def _cache_narrative(cls, cache_key: str, result: Dict[str, Any]):
+        """Store narrative result in cache with current timestamp."""
+        cls._narrative_cache[cache_key] = (result, datetime.utcnow())
+
+        # Clean up old entries (keep only last 50)
+        if len(cls._narrative_cache) > 50:
+            # Remove oldest entries
+            sorted_items = sorted(
+                cls._narrative_cache.items(),
+                key=lambda x: x[1][1]  # Sort by timestamp
+            )
+            cls._narrative_cache = dict(sorted_items[-50:])
+
+    # ──────────────────────────────────────────────
     # PHASE 4: Narrative Generation
     # ──────────────────────────────────────────────
 
-    async def generate_narrative(self) -> Dict[str, Any]:
-        """Generate a market narrative using Claude API with pre-computed analytics."""
-        if not self.is_available():
+    async def _generate_fallback_narrative(self, narrative_type: str = 'comprehensive') -> Dict[str, Any]:
+        """
+        Generate a template-based narrative when AI is unavailable.
+
+        Uses the same data gathering and analytics infrastructure but outputs
+        a simple formatted summary instead of AI-generated prose.
+        """
+        start_time = time.time()
+        timing = {}
+
+        try:
+            mode_config = get_mode_config(narrative_type)
+
+            # Phase 1: Gather raw data
+            gather_start = time.time()
+            context = self._gather_context()
+            timing['data_gathering_ms'] = round((time.time() - gather_start) * 1000, 2)
+
+            # Phase 2: Compute analytics
+            analytics_start = time.time()
+            analytics = self._compute_analytics(context)
+            timing['analytics_computation_ms'] = round((time.time() - analytics_start) * 1000, 2)
+
+            regime = analytics.get("regime", {}).get("regime", "UNKNOWN")
+            data_quality = context.get('_data_quality', {})
+
+            # Generate template-based narrative
+            narrative_lines = []
+
+            narrative_lines.append(f"**Market Summary** ({mode_config['name']})")
+            narrative_lines.append(f"Generated: {context.get('timestamp', 'N/A')}")
+            narrative_lines.append(f"Market Regime: {regime}")
+            narrative_lines.append("")
+
+            # Key indicators
+            indicators = context.get('indicators', {})
+            if indicators:
+                narrative_lines.append("**Key Economic Indicators:**")
+                for series_id, data in list(indicators.items())[:6]:  # Top 6
+                    val = data.get('value')
+                    if val is not None:
+                        name = data.get('name', series_id)
+                        units = data.get('units', '')
+                        change_str = ""
+                        if data.get('jobs_change_thousands'):
+                            change_str = f" ({data['jobs_change_thousands']:+.0f}K)"
+                        elif data.get('prior_change_pct'):
+                            change_str = f" ({data['prior_change_pct']:+.1f}%)"
+                        narrative_lines.append(f"- {name}: {val:.2f} {units}{change_str}")
+                narrative_lines.append("")
+
+            # Yields
+            yields = context.get('yields', {})
+            curve = yields.get('curve', {})
+            if curve:
+                narrative_lines.append("**Treasury Yields:**")
+                if '2Y' in curve and '10Y' in curve:
+                    spread = (curve['10Y'] - curve['2Y']) * 100
+                    narrative_lines.append(f"- 2Y: {curve['2Y']:.2f}%, 10Y: {curve['10Y']:.2f}%, Spread: {spread:+.0f} bps")
+                narrative_lines.append("")
+
+            # News summary
+            news = context.get('news', [])
+            news_analytics = analytics.get('news', {})
+            priority_headlines = news_analytics.get('priority_headlines', [])
+            if priority_headlines:
+                narrative_lines.append("**Breaking News:**")
+                for article in priority_headlines[:5]:
+                    narrative_lines.append(f"- {article['title']} ({article.get('source', 'Unknown')})")
+                narrative_lines.append("")
+
+            # Analyst notes
+            notes = self._generate_analyst_notes(context, analytics)
+            if notes:
+                narrative_lines.append("**Key Observations:**")
+                for note in notes:
+                    narrative_lines.append(f"- {note}")
+                narrative_lines.append("")
+
+            narrative_lines.append("*Note: This is a template-based summary. Configure ANTHROPIC_API_KEY for AI-powered analysis.*")
+
+            narrative_text = "\n".join(narrative_lines)
+
+            # Calculate total time
+            timing['template_generation_ms'] = round((time.time() - start_time) * 1000, 2)
+            timing['total_ms'] = timing['template_generation_ms']
+
+            result = {
+                "narrative": narrative_text,
+                "generated_at": get_current_time().isoformat(),
+                "model": "template-fallback",
+                "narrative_type": narrative_type,
+                "narrative_mode": f"{mode_config['name']} (Fallback)",
+                "tokens_used": 0,  # No API call
+                "indicators_count": len(indicators),
+                "news_count": len(news),
+                "market_regime": regime,
+                "from_cache": False,
+                "is_fallback": True,
+                "data_quality": data_quality,
+                "timing": timing,  # Performance metrics
+            }
+
+            self._last_narrative = result
+            logger.info(f"Generated fallback narrative (template mode) in {timing['total_ms']}ms")
+            return result
+
+        except Exception as e:
+            logger.error(f"Fallback narrative generation error: {e}")
             return {
-                "error": "AI generation not available. Please set ANTHROPIC_API_KEY.",
+                "error": f"Fallback generation failed: {str(e)}",
                 "generated_at": get_current_time().isoformat()
             }
 
+    async def generate_narrative(self, narrative_type: str = 'comprehensive') -> Dict[str, Any]:
+        """
+        Generate a market narrative using Claude API with pre-computed analytics.
+
+        Automatically falls back to template-based generation if:
+        - API key is unavailable
+        - API call fails (network error, rate limit, etc.)
+
+        Args:
+            narrative_type: The type of narrative to generate. Options:
+                - 'comprehensive': Balanced overview (default)
+                - 'fed_watcher': Fed policy deep dive
+                - 'rates_trader': Yield curve & credit analysis
+                - 'equity_strategist': Stock market focus
+                - 'macro_bear': Recession watch & risks
+                - 'geopolitical_analyst': Trade/policy/conflicts
+                - 'contrarian': Challenge consensus
+                - 'quick_brief': Concise 2-minute read
+
+        Returns:
+            Dict with narrative text, metadata, and mode info
+        """
+        start_time = time.time()
+        timing = {}
+
+        if not self.is_available():
+            logger.warning("AI generation unavailable. Using template-based fallback.")
+            return await self._generate_fallback_narrative(narrative_type)
+
         try:
+            # Get mode configuration
+            mode_config = get_mode_config(narrative_type)
+
             # Phase 1: Gather raw data
+            gather_start = time.time()
             context = self._gather_context()
+            timing['data_gathering_ms'] = round((time.time() - gather_start) * 1000, 2)
 
             # Phase 2: Compute analytics
+            analytics_start = time.time()
             analytics = self._compute_analytics(context)
+            timing['analytics_computation_ms'] = round((time.time() - analytics_start) * 1000, 2)
 
             # Phase 3: Format pre-digested briefing
+            format_start = time.time()
             context_text = self._format_context_for_prompt(context, analytics)
+            timing['prompt_formatting_ms'] = round((time.time() - format_start) * 1000, 2)
+
+            # Check cache before API call
+            cache_start = time.time()
+            cache_key = self._compute_cache_key(context_text, narrative_type)
+            cached_result = self._get_cached_narrative(cache_key)
+            timing['cache_lookup_ms'] = round((time.time() - cache_start) * 1000, 2)
+
+            if cached_result:
+                # Add a flag indicating this was cached
+                cached_result = cached_result.copy()
+                cached_result['from_cache'] = True
+                cached_result['cache_age_minutes'] = round(
+                    (datetime.utcnow() - self._narrative_cache[cache_key][1]).total_seconds() / 60,
+                    1
+                )
+                # Add total time including cache lookup
+                timing['total_ms'] = round((time.time() - start_time) * 1000, 2)
+                cached_result['timing'] = timing
+                self._last_narrative = cached_result
+                return cached_result
 
             regime = analytics.get("regime", {}).get("regime", "UNKNOWN")
             current_date = context.get("timestamp", "")
 
-            # Build user message
+            # Build user message with mode-specific instructions
             user_message = f"""You are receiving a pre-digested market briefing with all arithmetic already computed. Your job is INTERPRETATION and NARRATIVE, not calculation.
 
 {context_text}
 
-INSTRUCTIONS:
-- All changes, trends, and derived metrics are pre-computed. Trust them — do NOT recalculate.
-- Items flagged as SUSPECT are data errors. Ignore them entirely.
-- The ANALYST NOTES are rule-based observations. Agree, disagree, or extend them with deeper context.
-- The Market Regime assessment ({regime}) is a starting point. Challenge it if the data tells a different story.
-- The current date is {current_date}. Many indicators have publication lags — frame analysis around today, not the data's reference period.
-- For PAYEMS, the MoM change in thousands IS the headline jobs number.
-- For FEDFUNDS, the level change is in percentage points (e.g., -0.25 = 25bp cut). NOTE: FEDFUNDS is a monthly average from FRED — it may not reflect very recent rate decisions. CHECK THE BREAKING/HIGH-PRIORITY NEWS SECTION for any rate cuts or hikes that happened in the last few days, and incorporate them prominently.
-- The BREAKING/HIGH-PRIORITY NEWS section contains market-moving headlines. These should inform your narrative prominently — especially rate decisions, trade policy changes, and geopolitical events. If the Fed cut or raised rates recently, LEAD with that.
-- Write 400-600 words of flowing prose. No bullet points, no headers.
-- Do NOT use percentiles or percentile rankings in your narrative. Focus on actual values, changes, and trends.
-- Address: labor, inflation, growth, rates/markets, forward outlook."""
+{mode_config['instructions']}
 
-            # Call Claude API
+Current date: {current_date}
+Market Regime: {regime}
+"""
+
+            # Call Claude API with mode-specific system prompt
             client = self._get_client()
 
+            api_start = time.time()
             message = client.messages.create(
                 model="claude-sonnet-4-5-20250929",
                 max_tokens=1500,
                 messages=[
                     {"role": "user", "content": user_message}
                 ],
-                system=SYSTEM_PROMPT
+                system=mode_config['system_prompt']
             )
+            timing['api_call_ms'] = round((time.time() - api_start) * 1000, 2)
 
             narrative = message.content[0].text
+
+            # Extract data quality for response
+            data_quality = context.get('_data_quality', {})
+
+            # Calculate total time
+            timing['total_ms'] = round((time.time() - start_time) * 1000, 2)
 
             result = {
                 "narrative": narrative,
                 "generated_at": get_current_time().isoformat(),
                 "model": "claude-sonnet-4-5-20250929",
+                "narrative_type": narrative_type,
+                "narrative_mode": mode_config['name'],
                 "tokens_used": message.usage.input_tokens + message.usage.output_tokens,
                 "indicators_count": len(context.get('indicators', {})),
                 "news_count": len(context.get('news', [])),
                 "market_regime": regime,
+                "context_snapshot": context_text,  # Full pre-formatted briefing for audit trail
+                "from_cache": False,
+                "data_quality": data_quality,  # Data completeness metrics
+                "timing": timing,  # Performance metrics
             }
 
+            # Cache the result
+            self._cache_narrative(cache_key, result)
+
             self._last_narrative = result
-            logger.success(f"Generated narrative using {result['tokens_used']} tokens (regime: {regime})")
+            logger.success(f"Generated {narrative_type} narrative using {result['tokens_used']} tokens in {timing['total_ms']}ms (regime: {regime})")
             return result
 
         except anthropic.APIError as e:
-            logger.error(f"Anthropic API error: {e}")
-            return {
-                "error": f"API error: {str(e)}",
-                "generated_at": get_current_time().isoformat()
-            }
+            logger.error(f"Anthropic API error: {e}. Falling back to template-based narrative.")
+            fallback = await self._generate_fallback_narrative(narrative_type)
+            fallback['fallback_reason'] = f"API error: {str(e)}"
+            return fallback
         except Exception as e:
-            logger.error(f"Narrative generation error: {e}")
-            return {
-                "error": f"Generation failed: {str(e)}",
-                "generated_at": get_current_time().isoformat()
-            }
+            logger.error(f"Narrative generation error: {e}. Falling back to template-based narrative.")
+            fallback = await self._generate_fallback_narrative(narrative_type)
+            fallback['fallback_reason'] = f"Generation error: {str(e)}"
+            return fallback
 
     def get_last_narrative(self) -> Optional[Dict[str, Any]]:
         """Get the most recently generated narrative."""
         return self._last_narrative
+
+    @classmethod
+    def get_cache_stats(cls) -> Dict[str, Any]:
+        """Get cache statistics for monitoring."""
+        now = datetime.utcnow()
+        entries = []
+        for cache_key, (result, timestamp) in cls._narrative_cache.items():
+            age_minutes = (now - timestamp).total_seconds() / 60
+            entries.append({
+                'narrative_type': result.get('narrative_type', 'unknown'),
+                'age_minutes': round(age_minutes, 1),
+                'generated_at': result.get('generated_at'),
+                'cache_key': cache_key[:16] + '...',  # Truncated hash
+            })
+
+        return {
+            'cache_size': len(cls._narrative_cache),
+            'ttl_minutes': cls._cache_ttl_minutes,
+            'entries': sorted(entries, key=lambda x: x['age_minutes']),
+        }
+
+    @classmethod
+    def clear_cache(cls):
+        """Clear all cached narratives."""
+        count = len(cls._narrative_cache)
+        cls._narrative_cache.clear()
+        logger.info(f"Cleared {count} cached narratives")
+        return count
+
+    @staticmethod
+    def get_available_narrative_modes() -> Dict[str, Dict[str, str]]:
+        """
+        Get list of available narrative modes.
+
+        Returns:
+            Dict mapping mode keys to their metadata (name, description, icon)
+        """
+        return get_available_modes()

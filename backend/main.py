@@ -163,44 +163,104 @@ async def get_market_summary(db: Session = Depends(get_db)):
 
 
 @app.post("/api/narrative/generate")
-async def generate_market_narrative(db: Session = Depends(get_db)):
+async def generate_market_narrative(
+    narrative_type: str = 'comprehensive',
+    db: Session = Depends(get_db)
+):
     """
     Generate an AI-powered market narrative using Claude.
 
-    This endpoint triggers on-demand generation of a comprehensive
-    market analysis narrative. The narrative is generated fresh each time
-    and uses the latest available data.
+    This endpoint triggers on-demand generation of a market analysis narrative
+    with selectable analyst personas/perspectives.
+
+    Args:
+        narrative_type: The type of narrative to generate. Options:
+            - 'comprehensive': Balanced overview (default)
+            - 'fed_watcher': Fed policy deep dive
+            - 'rates_trader': Yield curve & credit analysis
+            - 'equity_strategist': Stock market focus
+            - 'macro_bear': Recession watch & risks
+            - 'geopolitical_analyst': Trade/policy/conflicts
+            - 'contrarian': Challenge consensus
+            - 'quick_brief': Concise 2-minute read
 
     Returns:
         {
             "narrative": "Long-form analysis text...",
             "generated_at": "2026-01-27T...",
-            "model": "claude-sonnet-4-20250514",
+            "model": "claude-sonnet-4-5-20250929",
+            "narrative_type": "fed_watcher",
+            "narrative_mode": "Fed Watcher",
             "tokens_used": 1234
         }
     """
     try:
         from modules.market_summary import AIMarketNarrative
 
-        generator = AIMarketNarrative(db)
-
-        if not generator.is_available():
+        # Validate narrative_type
+        available_modes = AIMarketNarrative.get_available_narrative_modes()
+        if narrative_type not in available_modes:
             raise HTTPException(
-                status_code=503,
-                detail="AI narrative generation not available. Please configure ANTHROPIC_API_KEY."
+                status_code=400,
+                detail=f"Invalid narrative_type '{narrative_type}'. Available options: {', '.join(available_modes.keys())}"
             )
 
-        result = await generator.generate_narrative()
+        generator = AIMarketNarrative(db)
+
+        # Generate narrative (will use fallback if API unavailable)
+        result = await generator.generate_narrative(narrative_type=narrative_type)
 
         if "error" in result:
-            raise HTTPException(status_code=500, detail=result["error"])
+            error_detail = {
+                "error": result["error"],
+                "message": "Narrative generation failed. This may be due to data availability issues or system errors.",
+                "suggestion": "Please try again later or check the /api/narrative/health endpoint for system status.",
+                "timestamp": result.get("generated_at", get_current_time().isoformat())
+            }
+            raise HTTPException(status_code=500, detail=error_detail)
 
         return result
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Narrative generation error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Narrative generation error: {e}", exc_info=True)
+        error_detail = {
+            "error": "Unexpected error during narrative generation",
+            "details": str(e),
+            "suggestion": "Please check server logs for more information or contact support.",
+            "timestamp": get_current_time().isoformat()
+        }
+        raise HTTPException(status_code=500, detail=error_detail)
+
+
+@app.get("/api/narrative/modes")
+async def get_narrative_modes():
+    """
+    Get list of available narrative modes with descriptions.
+
+    Returns:
+        {
+            "comprehensive": {
+                "name": "Comprehensive Overview",
+                "description": "Balanced analysis covering all major economic themes",
+                "icon": "📊"
+            },
+            ...
+        }
+    """
+    try:
+        from modules.market_summary import AIMarketNarrative
+        return AIMarketNarrative.get_available_narrative_modes()
+    except Exception as e:
+        logger.error(f"Error fetching narrative modes: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Failed to retrieve available narrative modes",
+                "details": str(e),
+                "timestamp": get_current_time().isoformat()
+            }
+        )
 
 
 @app.get("/api/narrative/status")
@@ -215,6 +275,181 @@ async def get_narrative_status():
         "available": bool(api_key),
         "timestamp": get_current_time().isoformat()
     }
+
+
+@app.get("/api/narrative/health")
+async def get_narrative_health():
+    """
+    Comprehensive health check for the narrative generation system.
+
+    Returns detailed diagnostics including:
+    - Database connectivity
+    - API key availability
+    - Data source health
+    - Cache status
+    - Recent generation performance
+    """
+    health = {
+        "status": "healthy",
+        "timestamp": get_current_time().isoformat(),
+        "checks": {}
+    }
+
+    try:
+        from modules.market_summary import AIMarketNarrative
+        from modules.data_storage import get_db
+        import os
+
+        # Check 1: Database connectivity
+        try:
+            db = next(get_db())
+            # Simple query to verify DB is accessible
+            db.execute("SELECT 1")
+            health["checks"]["database"] = {
+                "status": "ok",
+                "message": "Database connection successful"
+            }
+            db.close()
+        except Exception as e:
+            health["checks"]["database"] = {
+                "status": "error",
+                "message": f"Database error: {str(e)}"
+            }
+            health["status"] = "degraded"
+
+        # Check 2: API Key availability
+        api_key = os.getenv('ANTHROPIC_API_KEY')
+        health["checks"]["api_key"] = {
+            "status": "ok" if api_key else "warning",
+            "message": "API key configured" if api_key else "API key not configured - using fallback mode"
+        }
+        if not api_key:
+            health["status"] = "degraded" if health["status"] == "healthy" else health["status"]
+
+        # Check 3: Cache stats
+        try:
+            cache_stats = AIMarketNarrative.get_cache_stats()
+            health["checks"]["cache"] = {
+                "status": "ok",
+                "size": cache_stats.get("cache_size", 0),
+                "ttl_minutes": cache_stats.get("ttl_minutes", 30)
+            }
+        except Exception as e:
+            health["checks"]["cache"] = {
+                "status": "warning",
+                "message": f"Cache stats unavailable: {str(e)}"
+            }
+
+        # Check 4: Data quality (if we have a recent narrative)
+        try:
+            db = next(get_db())
+            generator = AIMarketNarrative(db)
+            last_narrative = generator.get_last_narrative()
+
+            if last_narrative and 'data_quality' in last_narrative:
+                dq = last_narrative['data_quality']
+                health["checks"]["data_quality"] = {
+                    "status": "ok" if dq.get('quality_level') in ['EXCELLENT', 'GOOD'] else "warning",
+                    "quality_score": dq.get('quality_score', 0),
+                    "quality_level": dq.get('quality_level', 'UNKNOWN'),
+                    "indicators_available": dq.get('indicators_available', 0),
+                    "news_count": dq.get('news_count', 0)
+                }
+                if dq.get('quality_level') in ['DEGRADED', 'POOR']:
+                    health["status"] = "degraded"
+            else:
+                health["checks"]["data_quality"] = {
+                    "status": "info",
+                    "message": "No recent narrative to assess"
+                }
+
+            db.close()
+        except Exception as e:
+            health["checks"]["data_quality"] = {
+                "status": "warning",
+                "message": f"Data quality check unavailable: {str(e)}"
+            }
+
+        # Check 5: Recent performance metrics
+        try:
+            if last_narrative and 'timing' in last_narrative:
+                timing = last_narrative['timing']
+                health["checks"]["performance"] = {
+                    "status": "ok",
+                    "last_generation_ms": timing.get('total_ms', 0),
+                    "from_cache": last_narrative.get('from_cache', False)
+                }
+            else:
+                health["checks"]["performance"] = {
+                    "status": "info",
+                    "message": "No recent performance data"
+                }
+        except Exception as e:
+            health["checks"]["performance"] = {
+                "status": "warning",
+                "message": f"Performance metrics unavailable: {str(e)}"
+            }
+
+        return health
+
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return {
+            "status": "error",
+            "timestamp": get_current_time().isoformat(),
+            "error": str(e)
+        }
+
+
+@app.get("/api/narrative/cache/stats")
+async def get_narrative_cache_stats():
+    """
+    Get narrative cache statistics (size, TTL, entries).
+
+    Returns cache metrics useful for monitoring API cost optimization.
+    """
+    try:
+        from modules.market_summary import AIMarketNarrative
+        return AIMarketNarrative.get_cache_stats()
+    except Exception as e:
+        logger.error(f"Error fetching cache stats: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Failed to retrieve cache statistics",
+                "details": str(e),
+                "suggestion": "Check server logs for more information",
+                "timestamp": get_current_time().isoformat()
+            }
+        )
+
+
+@app.post("/api/narrative/cache/clear")
+async def clear_narrative_cache():
+    """
+    Clear all cached narratives (force regeneration on next request).
+
+    Useful when you want to ensure fresh data or after configuration changes.
+    """
+    try:
+        from modules.market_summary import AIMarketNarrative
+        count = AIMarketNarrative.clear_cache()
+        return {
+            "cleared_entries": count,
+            "message": f"Successfully cleared {count} cached narrative(s)",
+            "timestamp": get_current_time().isoformat()
+        }
+    except Exception as e:
+        logger.error(f"Error clearing cache: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": "Failed to clear narrative cache",
+                "details": str(e),
+                "suggestion": "Check server logs for more information",
+                "timestamp": get_current_time().isoformat()
+            }
+        )
 
 
 # =============================================================================
