@@ -6,6 +6,8 @@ import { CreditSpreadsPanel } from '../components/CreditSpreadsPanel';
 import { RiskAlertPanel } from '../components/RiskAlertPanel';
 import { NewsFeed } from '../components/NewsFeed';
 import { MarketNarrative } from '../components/MarketNarrative';
+import { IntelligencePanel } from '../components/IntelligencePanel';
+import { ChatInterface } from '../components/ChatInterface';
 import { useWebSocket } from '../hooks/useWebSocket';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -146,10 +148,18 @@ export const Dashboard: React.FC = () => {
         <NewsFeed articles={data?.recent_news || []} />
       </div>
 
+      {/* Market Intelligence - Regime, Playbook, Correlations */}
+      <div className="mt-6">
+        <IntelligencePanel />
+      </div>
+
       {/* AI-Generated Market Narrative - Full width at bottom */}
       <div className="mt-6">
         <MarketNarrative />
       </div>
+
+      {/* Floating Chat Interface */}
+      <ChatInterface />
     </main>
   );
 };
