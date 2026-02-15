@@ -669,13 +669,14 @@ async def refresh_single_indicator(
         if df is None or df.empty:
             raise HTTPException(status_code=404, detail=f"No data available from FRED for {series_id}")
 
-        # Store data
-        stored_count = storage.store_values(series_id, df)
+        # Store data with revision detection
+        new_count, revised_count = storage.store_values(series_id, df, update_revised=True)
 
         return {
             "series_id": series_id,
             "fetched": len(df),
-            "stored": stored_count,
+            "stored": new_count,
+            "revised": revised_count,
             "status": "success"
         }
 

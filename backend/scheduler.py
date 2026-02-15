@@ -188,8 +188,34 @@ async def fetch_news():
 
         logger.success(f"News fetch complete: {total_stored} new, {total_duplicates} duplicates")
 
+        # Scrape full text for new articles in background
+        if total_stored > 0:
+            await scrape_article_texts()
+
     except Exception as e:
         logger.error(f"News fetch failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+async def scrape_article_texts():
+    """Scrape full article text for recent articles missing full_text."""
+    logger.info("Scheduled: Scraping article full texts...")
+
+    try:
+        from modules.news_aggregator.article_scraper import scrape_missing_articles
+
+        loop = asyncio.get_event_loop()
+        counts = await loop.run_in_executor(None, scrape_missing_articles)
+
+        if counts['scraped'] > 0:
+            logger.success(
+                f"Article scraping complete: {counts['scraped']} scraped, "
+                f"{counts['failed']} failed, {counts['skipped']} skipped"
+            )
+
+    except Exception as e:
+        logger.error(f"Article scraping failed: {e}")
         import traceback
         traceback.print_exc()
 
@@ -228,13 +254,14 @@ async def update_indicators():
     """
     Update economic indicators with latest data from FRED.
     Runs Monday-Friday at 8:30 AM ET (after economic releases).
-    Only fetches data newer than the most recent stored date for each series.
+    Fetches recent data (last 90 days) to catch new releases and revisions.
     """
     logger.info("Scheduled: Updating economic indicators from FRED...")
 
     try:
         from modules.economic_indicators import IndicatorDataFetcher, IndicatorStorage
         from modules.data_storage.database import get_db_context
+        from datetime import datetime as dt, timedelta
 
         fetcher = IndicatorDataFetcher()
 
@@ -244,7 +271,11 @@ async def update_indicators():
 
         updated_series = 0
         new_data_points = 0
+        revised_points = 0
         errors = []
+
+        # Always look back 90 days to catch new releases + revisions
+        lookback_start = (dt.now() - timedelta(days=90)).strftime('%Y-%m-%d')
 
         with get_db_context() as db:
             storage = IndicatorStorage(db)
@@ -254,41 +285,32 @@ async def update_indicators():
 
             for indicator in indicators:
                 try:
-                    # Get the latest stored date for this series
-                    date_range = storage.get_date_range(indicator.series_id)
-
-                    if date_range:
-                        # Fetch only data after the latest stored date
-                        start_date = date_range['end_date']
-                        df = fetcher.fetch_series(
-                            indicator.series_id,
-                            start_date=start_date,
-                            years_back=1  # Just get recent data
-                        )
-                    else:
-                        # No data stored yet, fetch last month
-                        from datetime import datetime, timedelta
-                        start = (datetime.now() - timedelta(days=30)).strftime('%Y-%m-%d')
-                        df = fetcher.fetch_series(
-                            indicator.series_id,
-                            start_date=start
-                        )
+                    df = fetcher.fetch_series(
+                        indicator.series_id,
+                        start_date=lookback_start,
+                    )
 
                     if df is not None and not df.empty:
-                        # Store new values
-                        stored = storage.store_values(indicator.series_id, df)
+                        # Store new values + update revised values
+                        stored, revised = storage.store_values(indicator.series_id, df, update_revised=True)
 
-                        if stored > 0:
+                        if stored > 0 or revised > 0:
                             updated_series += 1
                             new_data_points += stored
-                            logger.debug(f"  {indicator.series_id}: +{stored} new data points")
+                            revised_points += revised
+                            logger.debug(f"  {indicator.series_id}: +{stored} new, {revised} revised")
 
                 except Exception as e:
                     errors.append(indicator.series_id)
                     logger.error(f"  {indicator.series_id}: {e}")
 
-        if updated_series > 0:
-            logger.success(f"Indicators update complete: {updated_series} series updated, {new_data_points} new data points")
+        parts = []
+        if new_data_points:
+            parts.append(f"{new_data_points} new")
+        if revised_points:
+            parts.append(f"{revised_points} revised")
+        if parts:
+            logger.success(f"Indicators update complete: {updated_series} series, {', '.join(parts)} data points")
         else:
             logger.info("Indicators update complete: No new data available")
 
@@ -297,6 +319,32 @@ async def update_indicators():
 
     except Exception as e:
         logger.error(f"Indicator update failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+async def generate_daily_journal():
+    """Generate the daily AI market journal entry with pre-computed analytics."""
+    logger.info("Scheduled: Generating daily market journal...")
+
+    try:
+        from modules.market_summary.journal import MarketJournal
+        from modules.data_storage.database import get_db_context
+
+        with get_db_context() as db:
+            journal = MarketJournal(db)
+            entry = journal.create_or_update_today()
+            if entry:
+                themes = ", ".join(entry.key_themes or [])
+                logger.success(
+                    f"Daily journal created: {entry.date} | "
+                    f"Regime: {entry.regime} | Themes: {themes}"
+                )
+            else:
+                logger.warning("Failed to create daily journal entry")
+
+    except Exception as e:
+        logger.error(f"Daily journal generation failed: {e}")
         import traceback
         traceback.print_exc()
 
@@ -371,6 +419,15 @@ def start_scheduler():
         replace_existing=True
     )
 
+    # Article full-text scraping - every 30 minutes (catches missed articles)
+    scheduler.add_job(
+        scrape_article_texts,
+        IntervalTrigger(minutes=30),
+        id='article_scrape',
+        name='Article Full-Text Scrape',
+        replace_existing=True
+    )
+
     # Alert check - every minute
     scheduler.add_job(
         check_alerts,
@@ -380,10 +437,19 @@ def start_scheduler():
         replace_existing=True
     )
     
-    # Daily digest - 7 AM ET
+    # Daily market journal - 7:00 AM ET (before market open)
+    scheduler.add_job(
+        generate_daily_journal,
+        CronTrigger(hour=7, minute=0, day_of_week='mon-fri', timezone='America/New_York'),
+        id='daily_journal',
+        name='Daily Market Journal',
+        replace_existing=True
+    )
+
+    # Daily digest - 7:15 AM ET (after journal is generated)
     scheduler.add_job(
         send_daily_digest,
-        CronTrigger(hour=7, minute=0, timezone='America/New_York'),
+        CronTrigger(hour=7, minute=15, timezone='America/New_York'),
         id='daily_digest',
         name='Daily Digest',
         replace_existing=True

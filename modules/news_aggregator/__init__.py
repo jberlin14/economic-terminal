@@ -7,6 +7,7 @@ Fetches and aggregates financial news from RSS feeds.
 from .models import NewsArticle, NewsFeed, NewsAlert, NewsSummary
 from .rss_fetcher import RSSFetcher
 from .storage import NewsStorage, store_news_feed, get_latest_news
+from .article_scraper import ArticleScraper, scrape_missing_articles
 
 __all__ = [
     'NewsArticle',
@@ -17,4 +18,6 @@ __all__ = [
     'NewsStorage',
     'store_news_feed',
     'get_latest_news',
+    'ArticleScraper',
+    'scrape_missing_articles',
 ]

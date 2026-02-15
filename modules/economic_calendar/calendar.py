@@ -1,13 +1,14 @@
 """
 Economic Calendar - Release Tracking and Fetching
 
-Tracks major economic releases with their schedules, estimates, and historical surprises.
+Tracks major economic releases using FRED's release dates API for accurate scheduling.
+Falls back to heuristic estimation with weekend adjustment when API data unavailable.
 """
 
 import os
 from datetime import datetime, date, timedelta
 from typing import List, Optional, Dict, Any
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import requests
 from loguru import logger
@@ -33,6 +34,7 @@ class Release:
     typical_time: str  # e.g., "08:30 ET"
     frequency: str  # monthly, weekly, quarterly
     description: str
+    fred_release_id: Optional[int] = None  # FRED release ID for date lookup
 
     # Release-specific data (populated when fetched)
     release_date: Optional[date] = None
@@ -45,6 +47,7 @@ class Release:
 
 
 # Key economic releases to track
+# fred_release_id values from https://fred.stlouisfed.org/releases
 TRACKED_RELEASES = {
     # Employment
     "employment_situation": Release(
@@ -54,7 +57,8 @@ TRACKED_RELEASES = {
         importance=ReleaseImportance.HIGH,
         typical_time="08:30 ET",
         frequency="monthly",
-        description="Nonfarm payrolls, unemployment rate - First Friday of month"
+        description="Nonfarm payrolls, unemployment rate - First Friday of month",
+        fred_release_id=50,
     ),
     "jobless_claims": Release(
         id="jobless_claims",
@@ -63,7 +67,8 @@ TRACKED_RELEASES = {
         importance=ReleaseImportance.HIGH,
         typical_time="08:30 ET",
         frequency="weekly",
-        description="Weekly unemployment claims - Every Thursday"
+        description="Weekly unemployment claims - Every Thursday",
+        fred_release_id=113,
     ),
     "jolts": Release(
         id="jolts",
@@ -72,7 +77,8 @@ TRACKED_RELEASES = {
         importance=ReleaseImportance.MEDIUM,
         typical_time="10:00 ET",
         frequency="monthly",
-        description="Job openings and labor turnover"
+        description="Job openings and labor turnover",
+        fred_release_id=110,
     ),
 
     # Inflation
@@ -83,7 +89,8 @@ TRACKED_RELEASES = {
         importance=ReleaseImportance.HIGH,
         typical_time="08:30 ET",
         frequency="monthly",
-        description="Consumer inflation - Mid-month release"
+        description="Consumer inflation - Mid-month release",
+        fred_release_id=10,
     ),
     "pce": Release(
         id="pce",
@@ -92,7 +99,8 @@ TRACKED_RELEASES = {
         importance=ReleaseImportance.HIGH,
         typical_time="08:30 ET",
         frequency="monthly",
-        description="Fed's preferred inflation measure"
+        description="Fed's preferred inflation measure",
+        fred_release_id=54,
     ),
     "ppi": Release(
         id="ppi",
@@ -101,7 +109,8 @@ TRACKED_RELEASES = {
         importance=ReleaseImportance.MEDIUM,
         typical_time="08:30 ET",
         frequency="monthly",
-        description="Wholesale/producer inflation"
+        description="Wholesale/producer inflation",
+        fred_release_id=46,
     ),
 
     # GDP & Output
@@ -112,7 +121,8 @@ TRACKED_RELEASES = {
         importance=ReleaseImportance.HIGH,
         typical_time="08:30 ET",
         frequency="quarterly",
-        description="Gross Domestic Product"
+        description="Gross Domestic Product",
+        fred_release_id=53,
     ),
     "industrial_production": Release(
         id="industrial_production",
@@ -121,7 +131,8 @@ TRACKED_RELEASES = {
         importance=ReleaseImportance.MEDIUM,
         typical_time="09:15 ET",
         frequency="monthly",
-        description="Manufacturing and industrial output"
+        description="Manufacturing and industrial output",
+        fred_release_id=13,
     ),
 
     # Consumer
@@ -132,7 +143,8 @@ TRACKED_RELEASES = {
         importance=ReleaseImportance.HIGH,
         typical_time="08:30 ET",
         frequency="monthly",
-        description="Consumer spending indicator"
+        description="Consumer spending indicator",
+        fred_release_id=63,
     ),
     "consumer_confidence": Release(
         id="consumer_confidence",
@@ -141,7 +153,8 @@ TRACKED_RELEASES = {
         importance=ReleaseImportance.MEDIUM,
         typical_time="10:00 ET",
         frequency="monthly",
-        description="University of Michigan Consumer Sentiment"
+        description="University of Michigan Consumer Sentiment",
+        fred_release_id=14,
     ),
 
     # Housing
@@ -152,7 +165,8 @@ TRACKED_RELEASES = {
         importance=ReleaseImportance.MEDIUM,
         typical_time="08:30 ET",
         frequency="monthly",
-        description="New residential construction"
+        description="New residential construction",
+        fred_release_id=97,
     ),
     "existing_home_sales": Release(
         id="existing_home_sales",
@@ -161,7 +175,8 @@ TRACKED_RELEASES = {
         importance=ReleaseImportance.MEDIUM,
         typical_time="10:00 ET",
         frequency="monthly",
-        description="Sales of existing homes"
+        description="Sales of existing homes",
+        fred_release_id=99,
     ),
 
     # Fed & Rates
@@ -172,36 +187,54 @@ TRACKED_RELEASES = {
         importance=ReleaseImportance.HIGH,
         typical_time="14:00 ET",
         frequency="monthly",
-        description="Federal Reserve interest rate decision"
+        description="Federal Reserve interest rate decision",
+        fred_release_id=None,  # No FRED release for FOMC — use heuristic
     ),
 }
+
+
+def _skip_weekend(d: date) -> date:
+    """Adjust a date to the next business day if it falls on a weekend."""
+    if d.weekday() == 5:  # Saturday -> Monday
+        return d + timedelta(days=2)
+    elif d.weekday() == 6:  # Sunday -> Monday
+        return d + timedelta(days=1)
+    return d
 
 
 class EconomicCalendar:
     """
     Fetches and manages economic calendar data.
+    Uses FRED release dates API for accurate scheduling.
     """
 
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or FRED_API_KEY
         self.releases = TRACKED_RELEASES.copy()
+        self._release_date_cache: Dict[int, List[date]] = {}
 
     def is_available(self) -> bool:
         """Check if FRED API is available."""
         return bool(self.api_key)
 
-    def _get_fred_release_dates(self, release_id: int, limit: int = 10) -> List[Dict]:
-        """Fetch release dates from FRED releases endpoint."""
+    def _get_fred_release_dates(self, fred_release_id: int) -> List[date]:
+        """
+        Fetch upcoming release dates from FRED's release/dates endpoint.
+        Returns list of dates sorted ascending.
+        """
+        if fred_release_id in self._release_date_cache:
+            return self._release_date_cache[fred_release_id]
+
         if not self.is_available():
             return []
 
         try:
             url = f"{FRED_BASE_URL}/release/dates"
             params = {
-                "release_id": release_id,
+                "release_id": fred_release_id,
                 "api_key": self.api_key,
                 "file_type": "json",
-                "limit": limit,
+                "limit": 10,
                 "sort_order": "desc",
                 "include_release_dates_with_no_data": "true"
             }
@@ -210,9 +243,20 @@ class EconomicCalendar:
             response.raise_for_status()
             data = response.json()
 
-            return data.get("release_dates", [])
+            dates = []
+            for entry in data.get("release_dates", []):
+                try:
+                    d = datetime.strptime(entry["date"], "%Y-%m-%d").date()
+                    dates.append(d)
+                except (ValueError, KeyError):
+                    continue
+
+            dates.sort()
+            self._release_date_cache[fred_release_id] = dates
+            return dates
+
         except Exception as e:
-            logger.error(f"Failed to fetch FRED release dates: {e}")
+            logger.error(f"Failed to fetch FRED release dates for release_id={fred_release_id}: {e}")
             return []
 
     def _get_series_observations(self, series_id: str, limit: int = 5) -> List[Dict]:
@@ -242,8 +286,7 @@ class EconomicCalendar:
     def get_upcoming_releases(self, days_ahead: int = 14) -> List[Release]:
         """
         Get list of upcoming economic releases.
-
-        Uses a combination of known schedules and FRED release data.
+        Uses FRED release dates API for accuracy, with heuristic fallback.
         """
         upcoming = []
         today = date.today()
@@ -254,7 +297,6 @@ class EconomicCalendar:
             observations = self._get_series_observations(release.series_id, limit=2)
 
             if observations:
-                # Most recent observation
                 latest = observations[0]
                 try:
                     release.previous_value = float(latest["value"]) if latest["value"] != "." else None
@@ -262,88 +304,73 @@ class EconomicCalendar:
                 except (ValueError, KeyError):
                     pass
 
-            # Estimate next release date based on typical release schedules
-            next_release = self._estimate_next_release_date(release, today)
+            # Get next release date — prefer FRED API, fall back to heuristic
+            next_release = None
+
+            if release.fred_release_id:
+                fred_dates = self._get_fred_release_dates(release.fred_release_id)
+                # Find the next date >= today
+                for d in fred_dates:
+                    if d >= today:
+                        next_release = d
+                        break
+
+            # Fallback to heuristic if FRED didn't give us a future date
+            if next_release is None:
+                next_release = self._estimate_next_release_date(release, today)
 
             if next_release:
                 release.release_date = next_release
-
-                # Include if within our window
                 if today <= next_release <= end_date:
                     upcoming.append(release)
 
         # Sort by date
         upcoming.sort(key=lambda r: r.release_date or date.max)
-
         return upcoming
 
     def _estimate_next_release_date(self, release: Release, today: date) -> Optional[date]:
         """
         Estimate the next release date based on typical schedules.
-
-        Release schedules:
-        - Employment Situation: First Friday of month
-        - CPI: Usually 12th-15th of month (for prior month data)
-        - PPI: Usually 13th-16th of month
-        - Jobless Claims: Every Thursday
-        - GDP: End of month (advance), then revisions
-        - Retail Sales: Mid-month
-        - PCE: End of month
+        All dates are adjusted to skip weekends.
         """
-        import calendar as cal_module
-
         if release.frequency == "weekly":
             # Jobless claims - next Thursday
             days_until_thursday = (3 - today.weekday()) % 7
             if days_until_thursday == 0:
-                days_until_thursday = 7  # If today is Thursday, get next Thursday
+                days_until_thursday = 7
             return today + timedelta(days=days_until_thursday)
 
         elif release.frequency == "monthly":
-            # Determine typical release day based on report type
             if release.id == "employment_situation":
-                # First Friday of the month
                 return self._get_first_friday(today)
             elif release.id == "cpi":
-                # Usually around the 12th
                 return self._get_monthly_release_day(today, typical_day=12)
             elif release.id == "ppi":
-                # Usually around the 14th
                 return self._get_monthly_release_day(today, typical_day=14)
             elif release.id == "retail_sales":
-                # Usually around the 15th
                 return self._get_monthly_release_day(today, typical_day=15)
             elif release.id == "pce":
-                # Usually end of month (around 28th)
                 return self._get_monthly_release_day(today, typical_day=28)
             elif release.id == "consumer_confidence":
-                # Usually end of month
                 return self._get_monthly_release_day(today, typical_day=25)
             elif release.id in ["housing_starts", "existing_home_sales"]:
-                # Usually mid-month
                 return self._get_monthly_release_day(today, typical_day=18)
             elif release.id == "jolts":
-                # Usually around the 7th
                 return self._get_monthly_release_day(today, typical_day=7)
             elif release.id == "industrial_production":
-                # Usually around the 16th
                 return self._get_monthly_release_day(today, typical_day=16)
             elif release.id == "fomc_decision":
-                # FOMC meetings - roughly every 6 weeks, use approximation
                 return self._get_monthly_release_day(today, typical_day=20)
             else:
-                # Default to mid-month
                 return self._get_monthly_release_day(today, typical_day=15)
 
         elif release.frequency == "quarterly":
-            # GDP - end of month, quarterly
             return self._get_quarterly_release_day(today)
 
         return None
 
     def _get_first_friday(self, today: date) -> date:
         """Get the first Friday of this month or next month."""
-        # Check this month first
         first_day = today.replace(day=1)
         days_until_friday = (4 - first_day.weekday()) % 7
         first_friday = first_day + timedelta(days=days_until_friday)
@@ -361,14 +388,14 @@ class EconomicCalendar:
         return next_month + timedelta(days=days_until_friday)
 
     def _get_monthly_release_day(self, today: date, typical_day: int) -> date:
-        """Get the next occurrence of a typical monthly release day."""
+        """Get the next occurrence of a typical monthly release day, skipping weekends."""
         # Try this month
         try:
-            this_month_release = today.replace(day=typical_day)
+            this_month_release = _skip_weekend(today.replace(day=typical_day))
             if this_month_release >= today:
                 return this_month_release
         except ValueError:
-            pass  # Day doesn't exist in this month
+            pass
 
         # Get next month
         if today.month == 12:
@@ -377,37 +404,30 @@ class EconomicCalendar:
             next_month = today.replace(month=today.month + 1, day=1)
 
         try:
-            return next_month.replace(day=typical_day)
-        except ValueError:
-            # If day doesn't exist, use last day of month
             import calendar as cal_module
             last_day = cal_module.monthrange(next_month.year, next_month.month)[1]
-            return next_month.replace(day=min(typical_day, last_day))
+            return _skip_weekend(next_month.replace(day=min(typical_day, last_day)))
+        except ValueError:
+            return _skip_weekend(next_month.replace(day=28))
 
     def _get_quarterly_release_day(self, today: date) -> date:
         """Get the next quarterly release date (GDP)."""
-        # GDP advance estimates: end of Jan (Q4), Apr (Q1), Jul (Q2), Oct (Q3)
         quarterly_months = [1, 4, 7, 10]
         typical_day = 28
 
         for month in quarterly_months:
             if month >= today.month:
                 try:
-                    release = today.replace(month=month, day=typical_day)
+                    release = _skip_weekend(today.replace(month=month, day=typical_day))
                     if release >= today:
                         return release
                 except ValueError:
                     pass
 
-        # Next year Q4 release
-        return today.replace(year=today.year + 1, month=1, day=typical_day)
+        return _skip_weekend(today.replace(year=today.year + 1, month=1, day=typical_day))
 
     def get_release_history(self, release_id: str, limit: int = 12) -> List[Dict[str, Any]]:
-        """
-        Get historical release data with surprises.
-
-        Returns list of past releases with actual vs expected (where available).
-        """
+        """Get historical release data."""
         if release_id not in self.releases:
             return []
 
@@ -420,7 +440,6 @@ class EconomicCalendar:
                 value = float(obs["value"]) if obs["value"] != "." else None
                 release_date = datetime.strptime(obs["date"], "%Y-%m-%d").date()
 
-                # Calculate change from previous
                 change = None
                 change_percent = None
                 if i < len(observations) - 1 and value is not None:
@@ -442,19 +461,21 @@ class EconomicCalendar:
         return history
 
     def get_calendar_summary(self) -> Dict[str, Any]:
-        """
-        Get a summary of the economic calendar.
-        """
-        upcoming = self.get_upcoming_releases(days_ahead=14)
+        """Get a summary of the economic calendar."""
+        upcoming = self.get_upcoming_releases(days_ahead=21)
 
         # Group by importance
         high_importance = [r for r in upcoming if r.importance == ReleaseImportance.HIGH]
-        medium_importance = [r for r in upcoming if r.importance == ReleaseImportance.MEDIUM]
 
-        # Group by week
+        # Group by week — use Monday-Sunday boundaries
         today = date.today()
-        this_week = [r for r in upcoming if r.release_date and r.release_date < today + timedelta(days=7)]
-        next_week = [r for r in upcoming if r.release_date and today + timedelta(days=7) <= r.release_date < today + timedelta(days=14)]
+        # Start of this week (Monday)
+        week_start = today - timedelta(days=today.weekday())
+        next_week_start = week_start + timedelta(days=7)
+        week_after_start = week_start + timedelta(days=14)
+
+        this_week = [r for r in upcoming if r.release_date and week_start <= r.release_date < next_week_start]
+        next_week = [r for r in upcoming if r.release_date and next_week_start <= r.release_date < week_after_start]
 
         return {
             "total_upcoming": len(upcoming),

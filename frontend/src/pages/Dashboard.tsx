@@ -5,7 +5,7 @@ import { TreasuryHistoryTable } from '../components/TreasuryHistoryTable';
 import { CreditSpreadsPanel } from '../components/CreditSpreadsPanel';
 import { RiskAlertPanel } from '../components/RiskAlertPanel';
 import { NewsFeed } from '../components/NewsFeed';
-import { MarketNarrative } from '../components/MarketNarrative';
+import { IntelligencePanel } from '../components/IntelligencePanel';
 import { useWebSocket } from '../hooks/useWebSocket';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -141,14 +141,14 @@ export const Dashboard: React.FC = () => {
         <CreditSpreadsPanel spreads={data?.credit_spreads || []} />
       </div>
 
+      {/* Market Intelligence Panel */}
+      <div className="mt-6">
+        <IntelligencePanel />
+      </div>
+
       {/* News Feed - Full width */}
       <div className="mt-6">
         <NewsFeed articles={data?.recent_news || []} />
-      </div>
-
-      {/* AI-Generated Market Narrative - Full width at bottom */}
-      <div className="mt-6">
-        <MarketNarrative />
       </div>
     </main>
   );

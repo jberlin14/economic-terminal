@@ -4,7 +4,7 @@ Economic Indicators Storage
 Handles database operations for indicator data.
 """
 
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import List, Optional, Dict
 import pandas as pd
 from sqlalchemy.orm import Session
@@ -98,13 +98,17 @@ class IndicatorStorage:
 
     # ==================== Indicator Values ====================
 
-    def store_values(self, series_id: str, df: pd.DataFrame) -> int:
+    def store_values(self, series_id: str, df: pd.DataFrame, update_revised: bool = False):
         """
         Store historical values for a series.
-        Handles duplicates by skipping existing dates.
+        Handles duplicates by skipping existing dates (or updating if revised).
+
+        Returns:
+            tuple(new_count, revised_count) if update_revised=True, else int(new_count)
         """
         db = self._get_db()
-        count = 0
+        new_count = 0
+        revised_count = 0
 
         for _, row in df.iterrows():
             # Check if exists
@@ -122,15 +126,21 @@ class IndicatorStorage:
                     value=float(row['value'])
                 )
                 db.add(value)
-                count += 1
+                new_count += 1
+            elif update_revised and abs(existing.value - float(row['value'])) > 1e-6:
+                # FRED revised this data point — update it
+                existing.value = float(row['value'])
+                revised_count += 1
 
         db.commit()
 
         # Update indicator metadata
-        if count > 0:
+        if new_count > 0 or revised_count > 0:
             self._update_indicator_latest(series_id)
 
-        return count
+        if update_revised:
+            return new_count, revised_count
+        return new_count
 
     def _update_indicator_latest(self, series_id: str):
         """Update the latest value in indicator metadata"""
@@ -198,6 +208,31 @@ class IndicatorStorage:
             'value': latest.value
         }
 
+    @staticmethod
+    def _lookback_days(transformations: List[str], frequency: str = 'monthly') -> int:
+        """Calculate extra days of data needed before start_date for transforms."""
+        days = 0
+        for t in transformations:
+            if t.startswith('yoy'):
+                # Need 12+ months of prior data for YoY on monthly series
+                freq_days = {
+                    'daily': 370, 'weekly': 380, 'monthly': 400, 'quarterly': 400
+                }
+                days = max(days, freq_days.get(frequency, 400))
+            elif t.startswith('mom'):
+                days = max(days, 35)  # 1 extra month
+            elif t.startswith('ma_'):
+                try:
+                    periods = int(t.split('_')[1])
+                    # Estimate days based on frequency
+                    freq_mult = {'daily': 1, 'weekly': 7, 'monthly': 31, 'quarterly': 92}
+                    days = max(days, periods * freq_mult.get(frequency, 31) + 10)
+                except ValueError:
+                    pass
+            elif t == 'annualized':
+                days = max(days, 35)
+        return days
+
     def get_values_with_transforms(
         self,
         series_id: str,
@@ -205,17 +240,29 @@ class IndicatorStorage:
         end_date: Optional[date] = None,
         transformations: List[str] = None
     ) -> pd.DataFrame:
-        """Get values with calculated transformations"""
-        df = self.get_values(series_id, start_date, end_date)
-
-        if df.empty or not transformations:
-            return df
+        """Get values with calculated transformations."""
+        if not transformations:
+            return self.get_values(series_id, start_date, end_date)
 
         # Get frequency for YoY calculations
         indicator = self.get_indicator(series_id)
         frequency = indicator.frequency if indicator else 'monthly'
 
-        return self.transformer.transform(df, transformations, frequency)
+        # Fetch extra lookback data so transforms don't start with NaN
+        lookback = self._lookback_days(transformations, frequency)
+        fetch_start = (start_date - timedelta(days=lookback)) if start_date and lookback else start_date
+
+        df = self.get_values(series_id, fetch_start, end_date)
+        if df.empty:
+            return df
+
+        df = self.transformer.transform(df, transformations, frequency)
+
+        # Trim back to originally requested date range
+        if start_date and lookback:
+            df = df[df['date'] >= start_date].reset_index(drop=True)
+
+        return df
 
     def get_comparison_data(
         self,
@@ -238,13 +285,21 @@ class IndicatorStorage:
                 logger.warning(f"Indicator {series_id} not found in database")
                 continue
 
+            frequency = indicator.frequency if indicator else 'monthly'
+
+            # Fetch extra lookback data so transforms don't start with NaN
+            fetch_start = start_date
+            lookback = 0
+            if transform and start_date:
+                lookback = self._lookback_days([transform], frequency)
+                fetch_start = start_date - timedelta(days=lookback) if lookback else start_date
+
             logger.debug(f"Fetching data for {series_id}")
-            df = self.get_values(series_id, start_date, end_date)
+            df = self.get_values(series_id, fetch_start, end_date)
             logger.debug(f"Retrieved {len(df)} rows for {series_id}")
 
             if not df.empty:
                 if transform:
-                    frequency = indicator.frequency if indicator else 'monthly'
                     logger.debug(f"Applying transform '{transform}' to {series_id} (frequency: {frequency})")
                     df = self.transformer.transform(df, [transform], frequency)
 
@@ -253,6 +308,10 @@ class IndicatorStorage:
                         df['value'] = df[transform]
                     else:
                         logger.warning(f"Transform column '{transform}' not found in DataFrame for {series_id}")
+
+                # Trim back to originally requested date range
+                if lookback and start_date:
+                    df = df[df['date'] >= start_date]
 
                 df = df.set_index('date')
                 all_data[series_id] = df['value']

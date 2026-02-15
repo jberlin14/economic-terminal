@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from 'react';
-import { Brain, Sparkles, AlertCircle, Clock, ChevronDown } from 'lucide-react';
+import { Brain, Sparkles, AlertCircle, Clock, ChevronDown, BookOpen } from 'lucide-react';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -17,6 +17,19 @@ interface DataQuality {
   news_health: string;
 }
 
+interface TheoryApplied {
+  key: string;
+  name: string;
+}
+
+interface AnalyticalLens {
+  depth_tier: string;
+  tier_name: string;
+  tier_description: string;
+  theories_applied: TheoryApplied[];
+  theory_count: number;
+}
+
 interface NarrativeData {
   narrative: string;
   generated_at: string;
@@ -32,6 +45,7 @@ interface NarrativeData {
   cache_age_minutes?: number;
   data_quality?: DataQuality;
   is_fallback?: boolean;
+  analytical_lens?: AnalyticalLens;
 }
 
 interface NarrativeMode {
@@ -50,6 +64,7 @@ export const MarketNarrative: React.FC = () => {
   const [showModeSelector, setShowModeSelector] = useState(false);
   const [showContextSnapshot, setShowContextSnapshot] = useState(false);
   const [showDataQuality, setShowDataQuality] = useState(false);
+  const [showAnalyticalLens, setShowAnalyticalLens] = useState(false);
 
   // Check if AI is available and fetch modes on mount
   useEffect(() => {
@@ -413,6 +428,56 @@ export const MarketNarrative: React.FC = () => {
                           }>
                             {narrative.data_quality.news_health} ({narrative.data_quality.news_count} articles)
                           </span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Analytical Lens */}
+            {narrative.analytical_lens && narrative.analytical_lens.theory_count > 0 && (
+              <div className="mt-4 pt-4 border-t border-terminal-border">
+                <button
+                  onClick={() => setShowAnalyticalLens(!showAnalyticalLens)}
+                  className="flex items-center gap-2 text-xs text-terminal-text-dim hover:text-terminal-text transition-colors"
+                >
+                  <ChevronDown className={`w-3 h-3 transition-transform ${showAnalyticalLens ? 'rotate-180' : ''}`} />
+                  <BookOpen className="w-3 h-3" />
+                  <span>
+                    Analytical Lens: {narrative.analytical_lens.tier_name} · {narrative.analytical_lens.theory_count} frameworks applied
+                  </span>
+                </button>
+                {showAnalyticalLens && (
+                  <div className="mt-3 p-4 bg-terminal-dark rounded-lg border border-terminal-border">
+                    <div className="text-xs space-y-3">
+                      <div className="flex items-center justify-between">
+                        <span className="text-terminal-text-dim">Depth Tier:</span>
+                        <span className={`font-bold px-2 py-0.5 rounded ${
+                          narrative.analytical_lens.depth_tier === 'executive' ? 'bg-amber-500/20 text-amber-400' :
+                          narrative.analytical_lens.depth_tier === 'analyst' ? 'bg-blue-500/20 text-blue-400' :
+                          'bg-purple-500/20 text-purple-400'
+                        }`}>
+                          {narrative.analytical_lens.tier_name}
+                        </span>
+                      </div>
+                      <div>
+                        <span className="text-terminal-text-dim">{narrative.analytical_lens.tier_description}</span>
+                      </div>
+                      <div className="pt-2 border-t border-terminal-border">
+                        <span className="text-terminal-text-dim font-medium">Frameworks Applied:</span>
+                        <div className="mt-2 space-y-1.5">
+                          {narrative.analytical_lens.theories_applied.map((theory, idx) => (
+                            <div key={idx} className="flex items-center gap-2">
+                              <span className={`w-1.5 h-1.5 rounded-full ${
+                                narrative.analytical_lens!.depth_tier === 'executive' ? 'bg-amber-400' :
+                                narrative.analytical_lens!.depth_tier === 'analyst' ? 'bg-blue-400' :
+                                'bg-purple-400'
+                              }`} />
+                              <span className="text-terminal-text">{theory.name}</span>
+                            </div>
+                          ))}
                         </div>
                       </div>
                     </div>

@@ -10,6 +10,7 @@ import os
 import math
 import hashlib
 import time
+import pandas as pd
 from datetime import datetime, timedelta
 from typing import Dict, List, Any, Optional
 from collections import Counter, defaultdict
@@ -59,6 +60,7 @@ SYSTEM_PROMPT = """You are an expert economic analyst writing a pre-digested mar
 - Apply constraint-based reasoning about institutional and political limits
 - Identify what the data obscures as much as what it reveals
 - Connect macro trends to real-world business implications
+- When a THEORETICAL FRAMEWORK section is provided, follow its Analytical Persona instructions precisely — the depth tier determines voice and analytical depth
 
 **Structure:**
 - Write in flowing prose paragraphs, NOT bullet points or sections
@@ -562,17 +564,38 @@ class AIMarketNarrative:
         # Derived metrics
         derived = {}
 
-        # Real Fed Funds Rate
+        # Real Fed Funds Rate + CPI YoY
         try:
             ff = indicators.get("FEDFUNDS", {})
             cpi = indicators.get("CPIAUCSL", {})
             if ff.get("value") is not None and cpi.get("_df") is not None:
-                cpi_yoy = result.get("CPIAUCSL", {}).get("_cpi_yoy")
-                # Calculate CPI YoY from the data
+                # Use date-based YoY matching (not positional indexing, which breaks with missing months)
                 cpi_df = cpi.get("_df")
-                if cpi_df is not None and len(cpi_df) >= 13:
-                    cpi_vals = cpi_df['value'].values
-                    cpi_yoy_val = ((cpi_vals[-1] - cpi_vals[-13]) / abs(cpi_vals[-13])) * 100
+                cpi_yoy_val = None
+                if cpi_df is not None and len(cpi_df) >= 2:
+                    # Ensure we have a date column to match on
+                    if 'date' in cpi_df.columns:
+                        df_sorted = cpi_df.sort_values('date')
+                        latest_row = df_sorted.iloc[-1]
+                        latest_date = pd.Timestamp(latest_row['date'])
+                        target_date = latest_date - pd.DateOffset(years=1)
+                        # Find the closest date to 12 months ago
+                        df_sorted['_date_ts'] = pd.to_datetime(df_sorted['date'])
+                        date_diffs = (df_sorted['_date_ts'] - target_date).abs()
+                        closest_idx = date_diffs.idxmin()
+                        year_ago_row = df_sorted.loc[closest_idx]
+                        # Only use if within 45 days of target (handles monthly gaps)
+                        if abs((pd.Timestamp(year_ago_row['date']) - target_date).days) <= 45:
+                            cpi_yoy_val = ((latest_row['value'] - year_ago_row['value']) / abs(year_ago_row['value'])) * 100
+                        df_sorted.drop(columns=['_date_ts'], inplace=True, errors='ignore')
+
+                # Fallback: use pre-computed yoy_change_pct from the indicator context
+                if cpi_yoy_val is None:
+                    cpi_yoy_val_fallback = cpi.get("yoy_change_pct")
+                    if cpi_yoy_val_fallback is not None:
+                        cpi_yoy_val = cpi_yoy_val_fallback
+
+                if cpi_yoy_val is not None:
                     derived["real_fed_funds"] = round(ff["value"] - cpi_yoy_val, 2)
                     derived["cpi_yoy"] = round(cpi_yoy_val, 2)
         except Exception:
@@ -616,8 +639,11 @@ class AIMarketNarrative:
         try:
             from modules.risk_detector.yield_rules import analyze_curve_shape
             shape_data = analyze_curve_shape(curve)
-            result["shape"] = shape_data.get("classification", "UNKNOWN")
+            result["shape"] = shape_data.get("shape", "UNKNOWN")
             result["inversions"] = shape_data.get("inversions", [])
+            result["is_inverted"] = shape_data.get("is_inverted", False)
+            result["spread_10y2y"] = shape_data.get("spread_10y2y")
+            result["spread_10y3m"] = shape_data.get("spread_10y3m")
         except Exception as e:
             logger.debug(f"Could not analyze curve shape: {e}")
 
@@ -885,35 +911,101 @@ class AIMarketNarrative:
         return result
 
     def _compute_market_regime(self, context: Dict[str, Any], analytics: Dict[str, Any]) -> Dict[str, Any]:
-        """Composite market regime assessment from all signals."""
+        """Composite market regime assessment from all signals.
+
+        Weighted scoring approach (not simple counting):
+        - Each signal has a severity weight reflecting its predictive power
+        - Yield curve: only counts if truly inverted (PARTIALLY or DEEPLY), not just flat
+        - Sahm Rule: only triggers at ≥0.50 (the actual threshold), with a watch at ≥0.30
+        - Credit stress: must be HIGH (not just ELEVATED) for full weight
+        - VIX: elevated VIX adds moderate risk signal
+        - Inflation: above 3.0% adds background concern
+
+        Regime thresholds based on weighted sum:
+        - RISK_ON:   score < 2.0  (fundamentally healthy)
+        - CAUTIOUS:  score 2.0-3.5 (multiple concerns accumulating)
+        - RISK_OFF:  score 3.5-5.0 (serious stress across multiple pillars)
+        - CRISIS:    score ≥ 5.0  (severe multi-pillar stress)
+        """
         signals = {}
+        weighted_score = 0.0
 
-        # Yield curve inverted?
+        # 1. Yield curve — only meaningful inversions matter
         yield_analytics = analytics.get("yields", {})
-        shape = yield_analytics.get("shape", "")
-        signals["curve_inverted"] = "INVERTED" in str(shape).upper()
+        shape = str(yield_analytics.get("shape", "")).upper()
+        # Use the improved is_inverted flag if available, else check shape string
+        is_inverted = yield_analytics.get("is_inverted", "INVERTED" in shape)
+        deeply_inverted = "DEEPLY" in shape
+        signals["curve_inverted"] = is_inverted
 
-        # Credit stressed?
+        if deeply_inverted:
+            weighted_score += 2.0  # strong recession signal
+        elif is_inverted:
+            weighted_score += 1.0  # moderate concern
+        # FLAT or NORMAL = 0 points (not a risk signal)
+
+        # 2. Credit stressed?
         credit_analytics = analytics.get("credit", {})
-        signals["credit_stressed"] = credit_analytics.get("stress_level") in ("ELEVATED", "HIGH")
+        stress_level = credit_analytics.get("stress_level", "NORMAL")
+        signals["credit_stressed"] = stress_level in ("ELEVATED", "HIGH")
 
-        # Unemployment rising? (Sahm Rule)
+        if stress_level == "HIGH":
+            weighted_score += 2.0
+        elif stress_level == "ELEVATED":
+            weighted_score += 0.75
+
+        # 3. Unemployment rising? (Sahm Rule)
         ind_analytics = analytics.get("indicators", {})
         derived = ind_analytics.get("_derived", {})
         sahm = derived.get("sahm_rule")
-        signals["unemployment_rising"] = sahm is not None and sahm > 0.30
+        signals["unemployment_rising"] = sahm is not None and sahm > 0.50  # actual Sahm threshold
 
-        # Inflation above target?
+        if sahm is not None:
+            if sahm >= 0.50:
+                weighted_score += 2.5  # recession signal triggered
+            elif sahm >= 0.30:
+                weighted_score += 0.5  # watch level only
+
+        # 4. Inflation above target?
         cpi_yoy = derived.get("cpi_yoy")
         signals["inflation_above_target"] = cpi_yoy is not None and cpi_yoy > 3.0
 
-        # Composite
-        negative_count = sum(1 for v in signals.values() if v)
-        if negative_count >= 3:
+        if cpi_yoy is not None and cpi_yoy > 4.0:
+            weighted_score += 1.5
+        elif cpi_yoy is not None and cpi_yoy > 3.0:
+            weighted_score += 0.5
+
+        # 5. VIX — elevated volatility as supplemental signal
+        yields_ctx = context.get("yields", {})
+        # VIX may not be in context — use what we have
+        vix = None
+        try:
+            import yfinance as yf
+            import pandas as pd
+            data = yf.download("^VIX", period="1d", progress=False, auto_adjust=True)
+            if len(data) > 0:
+                close = data["Close"]
+                if isinstance(close, pd.DataFrame):
+                    close = close.iloc[:, 0]
+                vix = float(close.iloc[-1])
+        except Exception:
+            pass
+
+        if vix is not None:
+            signals["vix_elevated"] = vix >= 30
+            if vix >= 40:
+                weighted_score += 1.5
+            elif vix >= 30:
+                weighted_score += 0.75
+            elif vix >= 25:
+                weighted_score += 0.25
+
+        # Determine regime from weighted score
+        if weighted_score >= 5.0:
             regime = "CRISIS"
-        elif negative_count >= 2:
+        elif weighted_score >= 3.5:
             regime = "RISK_OFF"
-        elif negative_count >= 1:
+        elif weighted_score >= 2.0:
             regime = "CAUTIOUS"
         else:
             regime = "RISK_ON"
@@ -921,9 +1013,11 @@ class AIMarketNarrative:
         return {
             "regime": regime,
             "signals": signals,
+            "regime_score": round(weighted_score, 2),
             "sahm_rule": sahm,
             "cpi_yoy": cpi_yoy,
             "real_fed_funds": derived.get("real_fed_funds"),
+            "vix": vix,
         }
 
     def _strip_private_data(self, context: Dict[str, Any]):
@@ -1575,10 +1669,61 @@ class AIMarketNarrative:
             regime = analytics.get("regime", {}).get("regime", "UNKNOWN")
             current_date = context.get("timestamp", "")
 
+            # Build theory context for this narrative mode
+            theory_block = ""
+            analytical_lens = {}
+            try:
+                from modules.theory_library import get_theory_context
+                # Map narrative modes to depth tiers
+                # Deep analysis modes get "research", standard get "analyst", quick gets none
+                narrative_depth_map = {
+                    "fed_watcher": "research",
+                    "rates_trader": "research",
+                    "macro_bear": "research",
+                    "comprehensive": "analyst",
+                    "equity_strategist": "analyst",
+                    "geopolitical_analyst": "analyst",
+                    "contrarian": "analyst",
+                    "quick_brief": "executive",
+                }
+                narrative_depth = narrative_depth_map.get(narrative_type, "analyst")
+
+                # Get news event types from context
+                news_events = []
+                news_analytics = analytics.get("news", {})
+                if isinstance(news_analytics, dict):
+                    for article in news_analytics.get("priority_headlines", []):
+                        if isinstance(article, dict) and article.get("event_types"):
+                            news_events.extend(article["event_types"])
+                news_events = list(set(news_events))
+
+                # Map narrative mode to topics
+                mode_topics = {
+                    "comprehensive": ["yields", "inflation", "labor", "growth"],
+                    "fed_watcher": ["fed", "inflation", "labor"],
+                    "rates_trader": ["yields", "credit", "fx"],
+                    "equity_strategist": ["equities", "growth", "fed"],
+                    "macro_bear": ["credit", "labor", "growth", "yields"],
+                    "geopolitical_analyst": ["global", "trade"],
+                    "contrarian": ["yields", "inflation", "growth", "credit"],
+                    "quick_brief": [],
+                }
+                topics = mode_topics.get(narrative_type, [])
+                if topics:
+                    theory_block, analytical_lens = get_theory_context(
+                        depth=narrative_depth,
+                        topics=topics,
+                        regime=regime if regime != "UNKNOWN" else None,
+                        news_events=news_events,
+                    )
+            except Exception as e:
+                logger.debug(f"Theory context for narrative failed: {e}")
+
             # Build user message with mode-specific instructions
+            theory_section = f"\n\n{theory_block}" if theory_block else ""
             user_message = f"""You are receiving a pre-digested market briefing with all arithmetic already computed. Your job is INTERPRETATION and NARRATIVE, not calculation.
 
-{context_text}
+{context_text}{theory_section}
 
 {mode_config['instructions']}
 
@@ -1622,6 +1767,7 @@ Market Regime: {regime}
                 "from_cache": False,
                 "data_quality": data_quality,  # Data completeness metrics
                 "timing": timing,  # Performance metrics
+                "analytical_lens": analytical_lens,  # Which theories and depth tier were applied
             }
 
             # Cache the result

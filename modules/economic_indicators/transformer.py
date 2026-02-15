@@ -2,11 +2,13 @@
 Economic Indicators Data Transformer
 
 Calculates MoM, YoY, moving averages, and other transformations.
+Uses date-based matching (not row offsets) for YoY/MoM to handle gaps correctly.
 """
 
 import pandas as pd
 import numpy as np
 from typing import List, Optional
+from dateutil.relativedelta import relativedelta
 
 
 class DataTransformer:
@@ -30,44 +32,64 @@ class DataTransformer:
         return df[column].rolling(window=periods).mean()
 
     @staticmethod
-    def calculate_yoy_change(df: pd.DataFrame, frequency: str = 'monthly', column: str = 'value') -> pd.Series:
+    def _date_based_change(df: pd.DataFrame, months_back: int, column: str = 'value'):
         """
-        Calculate year-over-year change.
+        Calculate change vs the value N months ago using actual date matching.
+        Handles gaps in data correctly (unlike pct_change which counts rows).
 
-        Args:
-            df: DataFrame with date and value columns
-            frequency: 'daily', 'weekly', 'monthly', 'quarterly'
+        Returns (absolute_change, percent_change) Series tuple.
         """
-        periods_map = {
-            'daily': 252,    # Trading days
-            'weekly': 52,
-            'monthly': 12,
-            'quarterly': 4,
-        }
-        periods = periods_map.get(frequency, 12)
-        return df[column].diff(periods)
+        # Build a date->value lookup
+        date_col = df['date']
+        val_col = df[column]
+
+        # Convert dates to comparable format
+        dates = pd.to_datetime(date_col)
+        lookup = dict(zip(dates, val_col))
+
+        abs_changes = []
+        pct_changes = []
+
+        for d, v in zip(dates, val_col):
+            target_date = d - relativedelta(months=months_back)
+            prior = lookup.get(target_date)
+            if prior is not None and pd.notna(prior) and prior != 0:
+                abs_changes.append(v - prior)
+                pct_changes.append(((v - prior) / prior) * 100)
+            else:
+                abs_changes.append(np.nan)
+                pct_changes.append(np.nan)
+
+        return (
+            pd.Series(abs_changes, index=df.index),
+            pd.Series(pct_changes, index=df.index),
+        )
+
+    @staticmethod
+    def calculate_yoy_change(df: pd.DataFrame, frequency: str = 'monthly', column: str = 'value') -> pd.Series:
+        """Calculate year-over-year absolute change using date-based matching."""
+        months = {'quarterly': 12, 'monthly': 12, 'weekly': 12, 'daily': 12}
+        abs_chg, _ = DataTransformer._date_based_change(df, months.get(frequency, 12), column)
+        return abs_chg
 
     @staticmethod
     def calculate_yoy_percent(df: pd.DataFrame, frequency: str = 'monthly', column: str = 'value') -> pd.Series:
-        """Calculate year-over-year percent change"""
-        periods_map = {
-            'daily': 252,
-            'weekly': 52,
-            'monthly': 12,
-            'quarterly': 4,
-        }
-        periods = periods_map.get(frequency, 12)
-        return df[column].pct_change(periods) * 100
+        """Calculate year-over-year percent change using date-based matching."""
+        months = {'quarterly': 12, 'monthly': 12, 'weekly': 12, 'daily': 12}
+        _, pct_chg = DataTransformer._date_based_change(df, months.get(frequency, 12), column)
+        return pct_chg
 
     @staticmethod
     def calculate_mom_change(df: pd.DataFrame, column: str = 'value') -> pd.Series:
-        """Calculate month-over-month change (1 period)"""
-        return df[column].diff(1)
+        """Calculate month-over-month change using date-based matching."""
+        abs_chg, _ = DataTransformer._date_based_change(df, 1, column)
+        return abs_chg
 
     @staticmethod
     def calculate_mom_percent(df: pd.DataFrame, column: str = 'value') -> pd.Series:
-        """Calculate month-over-month percent change"""
-        return df[column].pct_change(1) * 100
+        """Calculate month-over-month percent change using date-based matching."""
+        _, pct_chg = DataTransformer._date_based_change(df, 1, column)
+        return pct_chg
 
     @staticmethod
     def calculate_annualized_rate(df: pd.DataFrame, periods: int = 1, column: str = 'value') -> pd.Series:

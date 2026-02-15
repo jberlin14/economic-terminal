@@ -306,6 +306,7 @@ class NewsArticle(Base):
             'category': self.category,
             'severity': self.severity,
             'summary': self.summary,
+            'full_text': self.full_text,
             'leader_mentions': self.leader_mentions or [],
             'institutions': self.institutions or [],
             'event_types': self.event_types or [],
@@ -529,4 +530,48 @@ class IndicatorValue(Base):
         return {
             'date': self.date.isoformat(),
             'value': self.value
+        }
+
+
+class AIMarketJournal(Base):
+    """
+    Persistent AI market assessment journal.
+
+    Stores daily market snapshots with pre-computed analytics so the AI chat
+    engine can track how conditions evolve over time and detect what changed.
+    One entry per calendar day.
+    """
+    __tablename__ = 'ai_market_journal'
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    date = Column(Date, nullable=False, unique=True, index=True)
+
+    # Regime classification at time of entry
+    regime = Column(String(30))  # RISK_ON, CAUTIOUS, RISK_OFF, CRISIS
+
+    # Key themes detected (JSON list of strings)
+    key_themes = Column(JSON)  # ["disinflation_stalling", "labor_softening", "curve_steepening"]
+
+    # AI-generated narrative summary (optional, populated lazily)
+    narrative_summary = Column(Text)
+
+    # Structured indicator snapshot for diff comparison (JSON dict)
+    # Structure: {series_id: {value, trend, mom_change, yoy_pct}, derived: {...}, curve_shape, credit_stress, ...}
+    indicator_snapshot = Column(JSON)
+
+    # News themes snapshot
+    news_themes = Column(JSON)  # {top_categories: {...}, top_leaders: [...], severity_counts: {...}}
+
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary for API response."""
+        return {
+            'date': self.date.isoformat() if self.date else None,
+            'regime': self.regime,
+            'key_themes': self.key_themes or [],
+            'narrative_summary': self.narrative_summary,
+            'indicator_snapshot': self.indicator_snapshot or {},
+            'news_themes': self.news_themes or {},
         }

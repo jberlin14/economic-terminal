@@ -152,38 +152,93 @@ def analyze_curve_shape(
 ) -> Dict[str, Any]:
     """
     Analyze the overall shape of the yield curve.
-    
+
     Returns analysis including inversions, kinks, and classification.
+
+    Classification logic:
+    - STEEP: 10Y-2Y spread > +100bps (strongly upward sloping)
+    - NORMAL: 10Y-2Y spread > 0 and no significant inversions in key segments
+    - FLAT: 10Y-2Y spread between -10bps and +25bps
+    - PARTIALLY_INVERTED: 10Y-2Y inverted, or 2+ key-segment inversions
+    - DEEPLY_INVERTED: 10Y-2Y deeply inverted (<-50bps) or 3+ key-segment inversions
+
+    Key segments are: 2Y→5Y, 5Y→10Y, 2Y→10Y, 3M→10Y. Minor inversions
+    in the long end (20Y vs 30Y) or very short end are common and do NOT
+    indicate meaningful inversion on their own.
     """
     tenors = ['1M', '3M', '6M', '1Y', '2Y', '5Y', '10Y', '20Y', '30Y']
     yields = []
-    
+
     for tenor in tenors:
         val = yield_data.get(tenor) or yield_data.get(f'tenor_{tenor.lower()}')
         if val is not None:
             yields.append((tenor, val))
-    
+
     if len(yields) < 3:
         return {'status': 'insufficient_data'}
-    
-    # Find inversions
-    inversions = []
+
+    # Build lookup
+    yield_map = {t: v for t, v in yields}
+
+    # Find all consecutive inversions (for reporting)
+    all_inversions = []
     for i in range(len(yields) - 1):
         if yields[i+1][1] < yields[i][1]:
-            inversions.append((yields[i][0], yields[i+1][0]))
-    
-    # Classify curve shape
-    if len(inversions) == 0:
-        shape = 'NORMAL'
-    elif len(inversions) >= 3:
-        shape = 'DEEPLY_INVERTED'
+            all_inversions.append((yields[i][0], yields[i+1][0]))
+
+    # Key spread: 10Y-2Y (the canonical recession indicator)
+    spread_10y2y = None
+    if '10Y' in yield_map and '2Y' in yield_map:
+        spread_10y2y = yield_map['10Y'] - yield_map['2Y']
+
+    # Key spread: 10Y-3M (alternative recession indicator)
+    spread_10y3m = None
+    if '10Y' in yield_map and '3M' in yield_map:
+        spread_10y3m = yield_map['10Y'] - yield_map['3M']
+
+    # Count KEY-SEGMENT inversions (not minor long-end kinks)
+    key_inversions = []
+    key_pairs = [('2Y', '5Y'), ('5Y', '10Y'), ('2Y', '10Y'), ('3M', '2Y'), ('3M', '10Y')]
+    for short, long in key_pairs:
+        if short in yield_map and long in yield_map:
+            if yield_map[long] < yield_map[short]:
+                key_inversions.append((short, long))
+
+    # Classify based on the 10Y-2Y spread (primary) and key inversions (secondary)
+    if spread_10y2y is not None:
+        spread_bps = spread_10y2y * 100
+        if spread_bps < -50 or len(key_inversions) >= 3:
+            shape = 'DEEPLY_INVERTED'
+        elif spread_bps < -10 or len(key_inversions) >= 2:
+            shape = 'PARTIALLY_INVERTED'
+        elif spread_bps < 25:
+            shape = 'FLAT'
+        elif spread_bps < 100:
+            shape = 'NORMAL'
+        else:
+            shape = 'STEEP'
     else:
-        shape = 'PARTIALLY_INVERTED'
-    
+        # Fallback if 10Y or 2Y missing
+        if len(key_inversions) >= 3:
+            shape = 'DEEPLY_INVERTED'
+        elif len(key_inversions) >= 2:
+            shape = 'PARTIALLY_INVERTED'
+        elif len(all_inversions) == 0:
+            shape = 'NORMAL'
+        else:
+            shape = 'FLAT'
+
+    # is_inverted only true for meaningful inversions, not minor kinks
+    is_inverted = shape in ('PARTIALLY_INVERTED', 'DEEPLY_INVERTED')
+
     return {
         'status': 'ok',
         'shape': shape,
-        'inversions': inversions,
-        'inversion_count': len(inversions),
-        'is_inverted': len(inversions) > 0
+        'inversions': all_inversions,
+        'key_inversions': key_inversions,
+        'inversion_count': len(all_inversions),
+        'key_inversion_count': len(key_inversions),
+        'is_inverted': is_inverted,
+        'spread_10y2y': spread_10y2y,
+        'spread_10y3m': spread_10y3m,
     }

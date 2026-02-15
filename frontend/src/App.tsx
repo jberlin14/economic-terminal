@@ -4,6 +4,9 @@ import { Header } from './components/Header';
 import { Dashboard } from './pages/Dashboard';
 import { HistoricalData } from './pages/HistoricalData';
 import { Calendar } from './pages/Calendar';
+import { RiskScorecard } from './pages/RiskScorecard';
+import { RegimeTimeline } from './pages/RegimeTimeline';
+import { ScenarioSimulator } from './pages/ScenarioSimulator';
 import { useWebSocket } from './hooks/useWebSocket';
 import './styles/globals.css';
 
@@ -38,6 +41,9 @@ function App() {
           <Route path="/" element={<Dashboard />} />
           <Route path="/historical" element={<HistoricalData />} />
           <Route path="/calendar" element={<Calendar />} />
+          <Route path="/risk-scorecard" element={<RiskScorecard />} />
+          <Route path="/regime-timeline" element={<RegimeTimeline />} />
+          <Route path="/scenarios" element={<ScenarioSimulator />} />
         </Routes>
 
         {/* Footer */}
