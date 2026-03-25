@@ -26,7 +26,7 @@ def two_year_data():
 class TestBasicCalculations:
     def test_calculate_change(self, monthly_data):
         result = DataTransformer.calculate_change(monthly_data)
-        assert result.iloc[0] != result.iloc[0]  # First value is NaN
+        assert pd.isna(result.iloc[0])  # First value is NaN
         assert result.iloc[1] == pytest.approx(0.5, abs=0.01)
 
     def test_calculate_percent_change(self, monthly_data):
@@ -70,15 +70,17 @@ class TestDateBasedCalculations:
         assert result.iloc[12] == pytest.approx(expected, abs=0.01)
 
     def test_yoy_handles_data_gap(self):
-        """YoY should return NaN when prior-year date is missing."""
-        dates = pd.to_datetime(["2024-01-01", "2024-03-01", "2025-01-01", "2025-03-01"])
-        values = [100.0, 102.0, 105.0, 108.0]
+        """YoY should be NaN when the exact prior-year date is missing."""
+        dates = pd.to_datetime([
+            "2024-01-01", "2024-03-01",
+            "2025-01-01", "2025-02-01", "2025-03-01",
+        ])
+        values = [100.0, 102.0, 105.0, 106.0, 108.0]
         df = pd.DataFrame({"date": dates, "value": values})
         result = DataTransformer.calculate_yoy_change(df)
-        # Jan 2025 has Jan 2024 match
-        assert result.iloc[2] == pytest.approx(5.0, abs=0.01)
-        # Mar 2025 has Mar 2024 match
-        assert result.iloc[3] == pytest.approx(6.0, abs=0.01)
+        assert result.iloc[2] == pytest.approx(5.0, abs=0.01)   # Jan 2025: Jan 2024 present
+        assert pd.isna(result.iloc[3])                           # Feb 2025: Feb 2024 missing
+        assert result.iloc[4] == pytest.approx(6.0, abs=0.01)   # Mar 2025: Mar 2024 present
 
 
 class TestTransformMethod:
@@ -103,6 +105,8 @@ class TestTransformMethod:
         assert "mom_change" in result
         assert "yoy_change" in result
         assert isinstance(result["value"], float)
+        assert result["mom_change"] == pytest.approx(0.7, abs=0.01)
+        assert result["yoy_change"] == pytest.approx(8.4, abs=0.01)
 
     def test_get_latest_with_changes_empty(self):
         t = DataTransformer()
