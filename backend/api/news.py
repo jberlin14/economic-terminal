@@ -2,15 +2,12 @@
 News API Endpoints
 """
 
-from datetime import datetime
-from typing import Optional, List
-from fastapi import APIRouter, Depends, HTTPException, Query
+from typing import Optional
+from fastapi import APIRouter, Depends, Query
 from sqlalchemy.orm import Session
 
 from modules.data_storage.database import get_db
 from modules.data_storage.queries import QueryHelper
-from modules.news_aggregator.search import NewsSearch
-from modules.news_aggregator.leader_detector import LeaderDetector
 from modules.utils.timezone import get_current_time
 
 router = APIRouter()

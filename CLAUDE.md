@@ -24,7 +24,7 @@ Environment variables in `.env`: `FRED_API_KEY`, `ALPHA_VANTAGE_API_KEY`, `ANTHR
 
 ### Backend (`backend/`)
 - `main.py` — FastAPI app, CORS, router registration, startup/shutdown
-- `scheduler.py` — APScheduler cron/interval jobs (FX every 5m, yields every 5m, news every 15m, indicators at 8:30 AM ET, daily journal at 7 AM ET)
+- `scheduler.py` — APScheduler cron/interval jobs (FX every 5m, yields every 5m, credit every 30m, news every 15m, article scraping every 30m, alert checks every 1m, indicators at 8:30 AM ET Mon-Fri, daily journal at 7 AM ET Mon-Fri, data cleanup at 3 AM ET)
 - `websocket.py` — WebSocket broadcast for real-time updates
 - `api/` — Route modules:
   - `health.py` — Health check, `/api/refresh` (triggers all data source updates)

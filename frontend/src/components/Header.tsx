@@ -48,6 +48,9 @@ export const Header: React.FC<HeaderProps> = ({ connected, lastUpdate, alertCoun
       const response = await fetch(`${API_URL}/api/refresh`, {
         method: 'POST',
       });
+      if (!response.ok) {
+        throw new Error('Refresh request failed');
+      }
       const data = await response.json();
 
       if (data.status === 'started') {

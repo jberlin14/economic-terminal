@@ -1,5 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react';
 
+// WebSocket messages are an external boundary — data shape varies by message type.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 interface WebSocketMessage {
   type: string;
   data?: any;
@@ -31,7 +33,6 @@ export const useWebSocket = (url: string): UseWebSocketReturn => {
       const ws = new WebSocket(url);
 
       ws.onopen = () => {
-        console.log('WebSocket connected');
         setConnected(true);
         reconnectAttemptsRef.current = 0;
       };
@@ -40,40 +41,36 @@ export const useWebSocket = (url: string): UseWebSocketReturn => {
         try {
           const message = JSON.parse(event.data);
           setLastMessage(message);
-        } catch (e) {
-          console.error('Failed to parse WebSocket message:', e);
+        } catch {
+          // Ignore malformed messages
         }
       };
 
-      ws.onerror = (error) => {
-        console.error('WebSocket error:', error);
+      ws.onerror = () => {
+        // Connection errors trigger onclose, handled there
       };
 
-      ws.onclose = (event) => {
-        console.log('WebSocket disconnected:', event.code, event.reason);
+      ws.onclose = () => {
         setConnected(false);
         wsRef.current = null;
 
         // Attempt to reconnect with exponential backoff
         const maxAttempts = 5;
         const baseDelay = 1000;
-        
+
         if (reconnectAttemptsRef.current < maxAttempts) {
           const delay = baseDelay * Math.pow(2, reconnectAttemptsRef.current);
-          console.log(`Reconnecting in ${delay}ms...`);
-          
+
           reconnectTimeoutRef.current = setTimeout(() => {
             reconnectAttemptsRef.current++;
             connect();
           }, delay);
-        } else {
-          console.log('Max reconnection attempts reached');
         }
       };
 
       wsRef.current = ws;
-    } catch (e) {
-      console.error('Failed to create WebSocket:', e);
+    } catch {
+      // WebSocket creation failed
     }
   }, [url]);
 

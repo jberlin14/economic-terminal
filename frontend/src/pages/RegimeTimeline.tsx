@@ -26,7 +26,7 @@ interface JournalEntry {
   regime: string;
   key_themes: string[];
   narrative_summary: string | null;
-  news_themes: Record<string, any>;
+  news_themes: Record<string, string[]>;
 }
 
 interface TimelineData {

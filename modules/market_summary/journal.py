@@ -108,9 +108,9 @@ class MarketJournal:
         # Labor theme
         sahm = derived.get("sahm_rule")
         if sahm is not None:
-            if sahm >= 0.5:
+            if sahm >= 0.50:
                 themes.append("sahm_triggered")
-            elif sahm > 0.3:
+            elif sahm > 0.30:
                 themes.append("labor_softening")
             else:
                 themes.append("labor_stable")

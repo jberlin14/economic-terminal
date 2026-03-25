@@ -446,15 +446,6 @@ def start_scheduler():
         replace_existing=True
     )
 
-    # Daily digest - 7:15 AM ET (after journal is generated)
-    scheduler.add_job(
-        send_daily_digest,
-        CronTrigger(hour=7, minute=15, timezone='America/New_York'),
-        id='daily_digest',
-        name='Daily Digest',
-        replace_existing=True
-    )
-    
     # Economic indicators - daily at 8:30 AM ET, Monday-Friday
     scheduler.add_job(
         update_indicators,

@@ -325,7 +325,8 @@ export const IntelligencePanel: React.FC = () => {
       const response = await fetch(`${API_URL}/api/narrative/status`);
       const data = await response.json();
       setAiAvailable(data.available);
-    } catch {
+    } catch (err) {
+      console.error('Failed to check AI availability:', err);
       setAiAvailable(false);
     }
   };
