@@ -20,12 +20,20 @@ def db_engine():
     engine.dispose()
 
 
+@pytest.fixture(autouse=True)
+def disable_scheduler(monkeypatch):
+    """Prevent APScheduler from starting during tests."""
+    monkeypatch.setattr("backend.scheduler.start_scheduler", lambda: None)
+    monkeypatch.setattr("backend.scheduler.stop_scheduler", lambda: None)
+
+
 @pytest.fixture
 def db_session(db_engine):
     """Create a DB session for testing."""
     Session = sessionmaker(bind=db_engine)
     session = Session()
     yield session
+    session.rollback()
     session.close()
 
 
