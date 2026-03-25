@@ -43,7 +43,7 @@ interface ScorecardData {
 // Pillar Icons & Methodology
 // ──────────────────────────────────────────────
 
-const PILLAR_ICONS: Record<string, any> = {
+const PILLAR_ICONS: Record<string, React.ElementType> = {
   inflation: Flame,
   labor: Users,
   yield_curve: GitBranch,

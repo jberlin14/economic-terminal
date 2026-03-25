@@ -11,6 +11,8 @@ import { useWebSocket } from '../hooks/useWebSocket';
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 const WS_URL = process.env.REACT_APP_WS_URL || 'ws://localhost:8000/ws';
 
+// Dashboard data is an aggregation boundary — child components define their own strict types.
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
 interface DashboardData {
   fx_rates: any[];
   yield_curve: any;
@@ -42,22 +44,22 @@ export const Dashboard: React.FC = () => {
       if (lastMessage.type === 'fx_update' && data) {
         setData(prev => prev ? {
           ...prev,
-          fx_rates: lastMessage.data.rates,
-          timestamp: lastMessage.timestamp || prev.timestamp
+          fx_rates: lastMessage.data?.rates,
+          timestamp: lastMessage.timestamp as string || prev.timestamp
         } : null);
       } else if (lastMessage.type === 'yield_update' && data) {
         // Check if this is credit spreads or yield curve
-        if (lastMessage.data.type === 'credit_spreads') {
+        if (lastMessage.data?.type === 'credit_spreads') {
           setData(prev => prev ? {
             ...prev,
-            credit_spreads: lastMessage.data.spreads,
-            timestamp: lastMessage.timestamp || prev.timestamp
+            credit_spreads: lastMessage.data?.spreads,
+            timestamp: lastMessage.timestamp as string || prev.timestamp
           } : null);
         } else {
           setData(prev => prev ? {
             ...prev,
             yield_curve: lastMessage.data,
-            timestamp: lastMessage.timestamp || prev.timestamp
+            timestamp: lastMessage.timestamp as string || prev.timestamp
           } : null);
         }
       } else if (lastMessage.type === 'alert' && data) {

@@ -35,18 +35,22 @@ export const TreasuryHistoryTable: React.FC = () => {
   const [horizon, setHorizon] = useState<Horizon>('1M');
   const [data, setData] = useState<ChartData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   const fetchData = useCallback(async (t: Tenor, h: Horizon) => {
     setLoading(true);
+    setError(null);
     try {
       const res = await fetch(
         `${API_URL}/api/yields/tenor-chart?tenor=${t}&horizon=${h.toLowerCase()}`
       );
       if (res.ok) {
         setData(await res.json());
+      } else {
+        setError('Failed to load treasury data');
       }
     } catch {
-      // silent
+      setError('Unable to connect to server');
     } finally {
       setLoading(false);
     }
@@ -155,7 +159,11 @@ export const TreasuryHistoryTable: React.FC = () => {
 
       {/* Chart */}
       <div className="h-40">
-        {loading && !displayData ? (
+        {error ? (
+          <div className="h-full flex items-center justify-center text-critical text-sm">
+            {error}
+          </div>
+        ) : loading && !displayData ? (
           <div className="h-full flex items-center justify-center text-terminal-text-dim text-sm">
             Loading...
           </div>

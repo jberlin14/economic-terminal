@@ -7,7 +7,6 @@ Provides access to historical economic indicator data with transformations.
 from datetime import datetime, date, timedelta
 from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Response
-from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from io import BytesIO
 import math

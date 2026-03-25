@@ -22,7 +22,8 @@ interface IndicatorsByReport {
 interface DataPoint {
   date: string;
   value?: number;
-  [key: string]: any; // For additional series or transforms
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  [key: string]: any; // Dynamic keys from API transforms
 }
 
 const DASHBOARDS = [
@@ -157,11 +158,11 @@ export const HistoricalData: React.FC = () => {
         setSelectedIndicator(result.series[0]);
 
         // Set remaining series as comparison
-        const compSeriesIds = result.series.slice(1).map((s: any) => s.series_id);
+        const compSeriesIds = result.series.slice(1).map((s: Indicator) => s.series_id);
         setComparisonSeries(compSeriesIds);
 
         // Fetch comparison data for all series
-        const allSeriesIds = result.series.map((s: any) => s.series_id).join(',');
+        const allSeriesIds = result.series.map((s: Indicator) => s.series_id).join(',');
         const dataUrl = `${API_URL}/api/indicators/compare?series=${allSeriesIds}&start=${startDate}&end=${endDate}&transform=yoy_percent`;
         const dataResponse = await fetch(dataUrl);
         if (!dataResponse.ok) throw new Error('Failed to fetch dashboard data');
@@ -747,8 +748,8 @@ export const HistoricalData: React.FC = () => {
                   {comparisonSeries.map((seriesId) => {
                     // Find indicator name from indicators list
                     let indicatorName = seriesId;
-                    Object.values(indicators).forEach((group: any) => {
-                      const found = group.find((ind: any) => ind.series_id === seriesId);
+                    Object.values(indicators).forEach((group: Indicator[]) => {
+                      const found = group.find((ind: Indicator) => ind.series_id === seriesId);
                       if (found) indicatorName = found.name;
                     });
 
@@ -808,7 +809,7 @@ export const HistoricalData: React.FC = () => {
                     <Tooltip
                       contentStyle={{ backgroundColor: '#1F2937', border: '1px solid #374151' }}
                       labelStyle={{ color: '#D1D5DB' }}
-                      formatter={(value: any) => typeof value === 'number' ? formatNumber(value) : value}
+                      formatter={(value: number | string) => typeof value === 'number' ? formatNumber(value) : value}
                     />
                     <Legend />
 
