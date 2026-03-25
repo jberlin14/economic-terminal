@@ -16,7 +16,7 @@ load_dotenv()
 from fastapi import FastAPI, HTTPException, Depends, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from sqlalchemy.orm import Session
 from loguru import logger
 
@@ -512,10 +512,13 @@ app.add_api_websocket_route("/ws", websocket_endpoint)
 async def global_exception_handler(request, exc):
     """Global exception handler."""
     logger.error(f"Unhandled exception: {exc}")
-    return {
-        "error": "Internal server error",
-        "detail": str(exc) if os.getenv('DEBUG', 'false').lower() == 'true' else "An error occurred"
-    }
+    return JSONResponse(
+        status_code=500,
+        content={
+            "error": "Internal server error",
+            "detail": str(exc) if os.getenv('DEBUG', 'false').lower() == 'true' else "An error occurred"
+        }
+    )
 
 
 if __name__ == "__main__":
