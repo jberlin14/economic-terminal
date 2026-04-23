@@ -131,7 +131,7 @@ async def update_credit_spreads():
     try:
         from modules.credit_monitor.data_fetcher import CreditDataFetcher
         from modules.credit_monitor.storage import store_credit_update
-        from backend.websocket import broadcast_yield_update
+        from backend.websocket import broadcast_credit_update
 
         # Fetch spreads
         fetcher = CreditDataFetcher()
@@ -142,8 +142,7 @@ async def update_credit_spreads():
             store_credit_update(update)
 
             # Broadcast update to WebSocket clients
-            await broadcast_yield_update({
-                'type': 'credit_spreads',
+            await broadcast_credit_update({
                 'spreads': [json.loads(s.json()) for s in update.spreads],
                 'timestamp': update.timestamp.isoformat()
             })
@@ -205,7 +204,7 @@ async def scrape_article_texts():
     try:
         from modules.news_aggregator.article_scraper import scrape_missing_articles
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         counts = await loop.run_in_executor(None, scrape_missing_articles)
 
         if counts['scraped'] > 0:
@@ -238,10 +237,8 @@ async def check_alerts():
             if critical:
                 logger.warning(f"Found {len(critical)} unsent CRITICAL alerts")
                 # TODO: Send immediate email via email_reporter module
-                
-                # Mark as sent
-                alert_ids = [a.id for a in critical]
-                manager.mark_email_sent(alert_ids)
+                # Alerts are NOT marked as sent until email sending is implemented,
+                # so they will continue to appear in unsent queries.
             
             # Expire old alerts
             manager.expire_old_alerts(hours=24)
@@ -323,6 +320,12 @@ async def update_indicators():
         traceback.print_exc()
 
 
+async def update_market_indices():
+    """Fetch and store latest market indices (VIX, oil, gold, S&P 500)."""
+    from modules.market_indices import update_market_indices as _update
+    await _update()
+
+
 async def generate_daily_journal():
     """Generate the daily AI market journal entry with pre-computed analytics."""
     logger.info("Scheduled: Generating daily market journal...")
@@ -401,6 +404,15 @@ def start_scheduler():
         replace_existing=True
     )
 
+    # Market indices (VIX, oil, gold, S&P 500) - every 5 minutes
+    scheduler.add_job(
+        update_market_indices,
+        IntervalTrigger(minutes=5),
+        id='market_index_update',
+        name='Market Index Update',
+        replace_existing=True
+    )
+
     # Credit spreads - every 30 minutes
     scheduler.add_job(
         update_credit_spreads,
@@ -437,10 +449,10 @@ def start_scheduler():
         replace_existing=True
     )
     
-    # Daily market journal - 7:00 AM ET (before market open)
+    # Daily market journal - 7:00 AM ET every day (including weekends for continuous timeline)
     scheduler.add_job(
         generate_daily_journal,
-        CronTrigger(hour=7, minute=0, day_of_week='mon-fri', timezone='America/New_York'),
+        CronTrigger(hour=7, minute=0, timezone='America/New_York'),
         id='daily_journal',
         name='Daily Market Journal',
         replace_existing=True
