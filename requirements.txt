@@ -32,6 +32,9 @@ pydantic>=2.0.0
 pandas>=2.0.0
 openpyxl>=3.1.0
 
+# ML
+scikit-learn>=1.4.0
+
 # Utilities
 loguru>=0.7.0
 pytz>=2023.3

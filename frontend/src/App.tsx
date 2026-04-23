@@ -7,6 +7,7 @@ import { Calendar } from './pages/Calendar';
 import { RiskScorecard } from './pages/RiskScorecard';
 import { RegimeTimeline } from './pages/RegimeTimeline';
 import { ScenarioSimulator } from './pages/ScenarioSimulator';
+import { RecessionModel } from './pages/RecessionModel';
 import { useWebSocket } from './hooks/useWebSocket';
 import './styles/globals.css';
 
@@ -44,6 +45,7 @@ function App() {
           <Route path="/risk-scorecard" element={<RiskScorecard />} />
           <Route path="/regime-timeline" element={<RegimeTimeline />} />
           <Route path="/scenarios" element={<ScenarioSimulator />} />
+          <Route path="/recession-model" element={<RecessionModel />} />
         </Routes>
 
         {/* Footer */}
