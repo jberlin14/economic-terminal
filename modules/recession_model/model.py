@@ -36,7 +36,8 @@ from sklearn.metrics import (
     confusion_matrix,
 )
 
-from .data_builder import RecessionDataBuilder, HORIZONS
+from .data_builder import RecessionDataBuilder
+from .features import HORIZONS
 
 MODEL_DIR = Path("data/recession_model")
 HORIZONS_LABELS = {3: "3-month", 6: "6-month", 12: "12-month"}
