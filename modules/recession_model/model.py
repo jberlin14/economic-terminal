@@ -21,6 +21,7 @@ from loguru import logger
 
 from sklearn.preprocessing import StandardScaler
 
+from .backtest import run_walk_forward
 from .data_builder import RecessionDataBuilder
 from .features import HORIZONS
 from .persistence import save_model, load_model
@@ -60,6 +61,13 @@ class RecessionModel:
         self.optimal_thresholds: Dict[int, Dict[str, float]] = {}
         # ensemble_weights[horizon][model_type] = float (AUC-based weight, sums to 1)
         self.ensemble_weights: Dict[int, Dict[str, float]] = {}
+        # walk-forward backtest results: walk_forward_metrics[horizon] = {
+        #   "aggregate_metrics": {...}, "fold_metrics": [...], "n_folds": int
+        # }
+        self.walk_forward_metrics: Dict[int, Dict[str, Any]] = {}
+        # oof_probs[horizon] = np.ndarray of length n_samples (NaN where untested),
+        # or None if not populated (e.g. legacy load)
+        self.oof_probs: Dict[int, Optional[np.ndarray]] = {}
         self.training_metadata: Dict[str, Any] = {}
         self._loaded = False
 
@@ -188,6 +196,27 @@ class RecessionModel:
 
             results[f"{horizon}m"] = horizon_results
 
+        # Walk-forward backtest — produces genuine out-of-sample probabilities
+        # per horizon. Feeds the calibration step (Phase 2A Task A2) downstream.
+        logger.info("Running walk-forward backtest across horizons...")
+        for horizon in HORIZONS:
+            target_col = f"recession_{horizon}m"
+            y_h = df[target_col].values.astype(int)
+            wf = run_walk_forward(X, y_h, horizon, self.feature_names)
+            self.walk_forward_metrics[horizon] = {
+                "aggregate_metrics": wf["aggregate_metrics"],
+                "fold_metrics": wf["fold_metrics"],
+                "n_folds": len(wf["fold_metrics"]),
+            }
+            self.oof_probs[horizon] = wf["oof_probs"]
+            agg = wf["aggregate_metrics"]
+            logger.success(
+                f"  Walk-forward {horizon}m: F1={agg['f1_mean']:.3f}±{agg['f1_std']:.3f}, "
+                f"AUC={agg['auc_mean']:.3f}±{agg['auc_std']:.3f}, "
+                f"Brier={agg['brier_mean']:.3f}±{agg['brier_std']:.3f} "
+                f"({len(wf['fold_metrics'])} folds)"
+            )
+
         self.training_metadata = {
             "trained_at": datetime.utcnow().isoformat(),
             "data_start": data_meta["start_date"],
@@ -200,6 +229,11 @@ class RecessionModel:
             "test_size": len(X) - split_idx,
             "model_types": list(MODEL_TYPES.keys()),
             "best_models": {str(k): v for k, v in self.best_model.items()},
+            "walk_forward": {
+                f"{h}m": self.walk_forward_metrics[h]["aggregate_metrics"]
+                for h in HORIZONS
+                if h in self.walk_forward_metrics
+            },
         }
 
         self._loaded = True

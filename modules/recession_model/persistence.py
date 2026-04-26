@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 import joblib
+import numpy as np
 from loguru import logger
 
 from .features import HORIZONS
@@ -44,6 +45,24 @@ def save_model(model: "RecessionModel") -> None:
                     MODEL_DIR / f"model_{model_type}_{horizon}m.joblib",
                 )
 
+    # Save out-of-fold probability arrays as .npy files (too large for JSON)
+    oof_summary = {}
+    walk_forward_metrics_meta = {}
+    if getattr(model, "walk_forward_metrics", None):
+        for horizon in HORIZONS:
+            wf = model.walk_forward_metrics.get(horizon)
+            if wf:
+                walk_forward_metrics_meta[str(horizon)] = wf
+            arr = model.oof_probs.get(horizon) if model.oof_probs else None
+            if arr is not None:
+                np.save(MODEL_DIR / f"oof_probs_{horizon}m.npy", arr)
+                n_total = int(arr.shape[0])
+                n_predicted = int(np.sum(~np.isnan(arr)))
+                oof_summary[str(horizon)] = {
+                    "n_predicted": n_predicted,
+                    "n_total": n_total,
+                }
+
     meta = {
         "feature_names": model.feature_names,
         "metrics": {
@@ -68,6 +87,8 @@ def save_model(model: "RecessionModel") -> None:
         },
         "training_metadata": model.training_metadata,
         "model_types": list(MODEL_TYPES.keys()),
+        "walk_forward_metrics": walk_forward_metrics_meta,
+        "oof_summary": oof_summary,
     }
     with open(MODEL_DIR / "metadata.json", "w") as f:
         json.dump(meta, f, indent=2)
@@ -114,6 +135,24 @@ def load_model(model: "RecessionModel") -> bool:
         model.ensemble_weights = {
             int(k): v for k, v in meta.get("ensemble_weights", {}).items()
         }
+
+        # Walk-forward metrics + OOF probs (added in Phase 2A Task A1).
+        # Backwards-compat: missing keys/files are tolerated.
+        stored_wf = meta.get("walk_forward_metrics", {}) or {}
+        model.walk_forward_metrics = {
+            int(k): v for k, v in stored_wf.items()
+        }
+        model.oof_probs = {}
+        for horizon in HORIZONS:
+            oof_path = MODEL_DIR / f"oof_probs_{horizon}m.npy"
+            if oof_path.exists():
+                try:
+                    model.oof_probs[horizon] = np.load(oof_path)
+                except Exception as e:
+                    logger.warning(f"Failed to load oof_probs for {horizon}m: {e}")
+                    model.oof_probs[horizon] = None
+            else:
+                model.oof_probs[horizon] = None
 
         # Determine which model types to load
         model_types = meta.get("model_types", list(MODEL_TYPES.keys()))
@@ -180,6 +219,8 @@ def _load_legacy(model: "RecessionModel") -> bool:
             model.models[horizon] = {"logistic": joblib.load(model_path)}
 
         model.best_model = {h: "logistic" for h in HORIZONS}
+        model.walk_forward_metrics = {}
+        model.oof_probs = {h: None for h in HORIZONS}
         model._loaded = True
         logger.info("Loaded legacy single-model recession model")
         return True
