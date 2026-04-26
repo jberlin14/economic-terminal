@@ -12,21 +12,18 @@ Includes per-model optimal threshold tuning for recession detection.
 """
 
 import os
-import json
 from datetime import datetime
-from pathlib import Path
 from typing import Dict, List, Optional, Any, Tuple
 
 import numpy as np
 import pandas as pd
 from loguru import logger
 
-import joblib
-
 from sklearn.preprocessing import StandardScaler
 
 from .data_builder import RecessionDataBuilder
 from .features import HORIZONS
+from .persistence import save_model, load_model
 from .training import (
     HORIZONS_LABELS,
     MODEL_TYPES,
@@ -35,8 +32,6 @@ from .training import (
     find_optimal_threshold,
     extract_tree_rules,
 )
-
-MODEL_DIR = Path("data/recession_model")
 
 
 class RecessionModel:
@@ -323,163 +318,11 @@ class RecessionModel:
 
     def save(self):
         """Save all model artifacts to disk."""
-        MODEL_DIR.mkdir(parents=True, exist_ok=True)
-
-        for horizon in HORIZONS:
-            # Save scaler
-            joblib.dump(
-                self.scalers[horizon],
-                MODEL_DIR / f"scaler_{horizon}m.joblib",
-            )
-            # Save each model type
-            for model_type in MODEL_TYPES:
-                if model_type in self.models.get(horizon, {}):
-                    joblib.dump(
-                        self.models[horizon][model_type],
-                        MODEL_DIR / f"model_{model_type}_{horizon}m.joblib",
-                    )
-
-        meta = {
-            "feature_names": self.feature_names,
-            "metrics": {
-                str(h): {mt: m for mt, m in mts.items()}
-                for h, mts in self.metrics.items()
-            },
-            "confusion_matrices": {
-                str(h): {mt: cm for mt, cm in cms.items()}
-                for h, cms in self.confusion_matrices.items()
-            },
-            "best_model": {str(k): v for k, v in self.best_model.items()},
-            "decision_tree_rules": {
-                str(k): v for k, v in self.decision_tree_rules.items()
-            },
-            "optimal_thresholds": {
-                str(h): {mt: t for mt, t in thresholds.items()}
-                for h, thresholds in self.optimal_thresholds.items()
-            },
-            "ensemble_weights": {
-                str(h): {mt: w for mt, w in weights.items()}
-                for h, weights in self.ensemble_weights.items()
-            },
-            "training_metadata": self.training_metadata,
-            "model_types": list(MODEL_TYPES.keys()),
-        }
-        with open(MODEL_DIR / "metadata.json", "w") as f:
-            json.dump(meta, f, indent=2)
-
-        logger.success(f"Multi-model ensemble saved to {MODEL_DIR}")
+        save_model(self)
 
     def load(self) -> bool:
         """Load model artifacts from disk."""
-        meta_path = MODEL_DIR / "metadata.json"
-        if not meta_path.exists():
-            logger.debug("No saved recession model found")
-            return False
-
-        try:
-            with open(meta_path) as f:
-                meta = json.load(f)
-
-            self.feature_names = meta["feature_names"]
-            self.training_metadata = meta.get("training_metadata", {})
-
-            # Load metrics
-            stored_metrics = meta.get("metrics", {})
-            self.metrics = {}
-            for h_str, model_metrics in stored_metrics.items():
-                h = int(h_str)
-                self.metrics[h] = model_metrics
-
-            # Load confusion matrices
-            stored_cms = meta.get("confusion_matrices", {})
-            self.confusion_matrices = {}
-            for h_str, cms in stored_cms.items():
-                self.confusion_matrices[int(h_str)] = cms
-
-            self.best_model = {
-                int(k): v for k, v in meta.get("best_model", {}).items()
-            }
-            self.decision_tree_rules = {
-                int(k): v for k, v in meta.get("decision_tree_rules", {}).items()
-            }
-            self.optimal_thresholds = {
-                int(k): v for k, v in meta.get("optimal_thresholds", {}).items()
-            }
-            self.ensemble_weights = {
-                int(k): v for k, v in meta.get("ensemble_weights", {}).items()
-            }
-
-            # Determine which model types to load
-            model_types = meta.get("model_types", list(MODEL_TYPES.keys()))
-
-            # Load models and scalers
-            self.models = {}
-            self.scalers = {}
-
-            for horizon in HORIZONS:
-                scaler_path = MODEL_DIR / f"scaler_{horizon}m.joblib"
-                if not scaler_path.exists():
-                    # Backwards compat: try old single-model format
-                    return self._load_legacy()
-                self.scalers[horizon] = joblib.load(scaler_path)
-
-                self.models[horizon] = {}
-                for model_type in model_types:
-                    model_path = MODEL_DIR / f"model_{model_type}_{horizon}m.joblib"
-                    if model_path.exists():
-                        self.models[horizon][model_type] = joblib.load(model_path)
-
-                if not self.models[horizon]:
-                    logger.warning(f"No models loaded for {horizon}m horizon")
-                    return False
-
-            self._loaded = True
-            logger.info(f"Multi-model recession ensemble loaded ({len(model_types)} model types)")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to load recession model: {e}")
-            return False
-
-    def _load_legacy(self) -> bool:
-        """Load old single-model format for backwards compatibility."""
-        try:
-            meta_path = MODEL_DIR / "metadata.json"
-            with open(meta_path) as f:
-                meta = json.load(f)
-
-            self.feature_names = meta["feature_names"]
-            self.training_metadata = meta.get("training_metadata", {})
-
-            # Old format had metrics keyed by horizon directly
-            old_metrics = meta.get("metrics", {})
-            self.metrics = {}
-            for h_str, m in old_metrics.items():
-                h = int(h_str)
-                # Wrap in logistic key
-                self.metrics[h] = {"logistic": m}
-
-            self.models = {}
-            self.scalers = {}
-
-            for horizon in HORIZONS:
-                # Old format: model_{horizon}m.joblib, scaler_{horizon}m.joblib
-                model_path = MODEL_DIR / f"model_{horizon}m.joblib"
-                scaler_path = MODEL_DIR / f"scaler_{horizon}m.joblib"
-                if not model_path.exists() or not scaler_path.exists():
-                    return False
-
-                self.scalers[horizon] = joblib.load(scaler_path)
-                self.models[horizon] = {"logistic": joblib.load(model_path)}
-
-            self.best_model = {h: "logistic" for h in HORIZONS}
-            self._loaded = True
-            logger.info("Loaded legacy single-model recession model")
-            return True
-
-        except Exception as e:
-            logger.error(f"Failed to load legacy model: {e}")
-            return False
+        return load_model(self)
 
     def get_model_info(self) -> Dict[str, Any]:
         """Return model metadata and metrics for the frontend."""
