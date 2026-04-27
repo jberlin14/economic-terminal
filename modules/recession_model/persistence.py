@@ -44,6 +44,15 @@ def save_model(model: "RecessionModel") -> None:
                     model.models[horizon][model_type],
                     MODEL_DIR / f"model_{model_type}_{horizon}m.joblib",
                 )
+        # Save fitted calibrator (Phase 2A Task A2). Skip horizons with no
+        # calibrator (legacy state); identity calibrators ARE persisted so
+        # subsequent predict() calls don't trip the missing-calibrator branch.
+        calibrator = (model.calibrators or {}).get(horizon)
+        if calibrator is not None:
+            joblib.dump(
+                calibrator,
+                MODEL_DIR / f"calibrator_{horizon}m.joblib",
+            )
 
     # Save out-of-fold probability arrays as .npy files (too large for JSON)
     oof_summary = {}
@@ -89,6 +98,12 @@ def save_model(model: "RecessionModel") -> None:
         "model_types": list(MODEL_TYPES.keys()),
         "walk_forward_metrics": walk_forward_metrics_meta,
         "oof_summary": oof_summary,
+        "calibration_method": {
+            str(h): method for h, method in (model.calibration_method or {}).items()
+        },
+        "calibration_brier_comparison": {
+            str(h): brier for h, brier in (model.calibration_brier or {}).items()
+        },
     }
     with open(MODEL_DIR / "metadata.json", "w") as f:
         json.dump(meta, f, indent=2)
@@ -153,6 +168,26 @@ def load_model(model: "RecessionModel") -> bool:
                     model.oof_probs[horizon] = None
             else:
                 model.oof_probs[horizon] = None
+
+        # Calibrators (Phase 2A Task A2). Backwards-compat: missing files
+        # leave the slot at None and predict() falls through to raw values.
+        model.calibrators = {}
+        for horizon in HORIZONS:
+            calib_path = MODEL_DIR / f"calibrator_{horizon}m.joblib"
+            if calib_path.exists():
+                try:
+                    model.calibrators[horizon] = joblib.load(calib_path)
+                except Exception as e:
+                    logger.warning(f"Failed to load calibrator for {horizon}m: {e}")
+                    model.calibrators[horizon] = None
+            else:
+                model.calibrators[horizon] = None
+        model.calibration_method = {
+            int(k): v for k, v in (meta.get("calibration_method", {}) or {}).items()
+        }
+        model.calibration_brier = {
+            int(k): v for k, v in (meta.get("calibration_brier_comparison", {}) or {}).items()
+        }
 
         # Determine which model types to load
         model_types = meta.get("model_types", list(MODEL_TYPES.keys()))
@@ -221,6 +256,9 @@ def _load_legacy(model: "RecessionModel") -> bool:
         model.best_model = {h: "logistic" for h in HORIZONS}
         model.walk_forward_metrics = {}
         model.oof_probs = {h: None for h in HORIZONS}
+        model.calibrators = {h: None for h in HORIZONS}
+        model.calibration_method = {}
+        model.calibration_brier = {}
         model._loaded = True
         logger.info("Loaded legacy single-model recession model")
         return True

@@ -87,7 +87,11 @@ class RecessionPredictor:
 
         return {
             "trained": True,
+            # `probabilities` is the calibrated ensemble (canonical).
+            # `raw_probabilities` is the AUC-weighted raw average for
+            # transparency — frontend can show both side-by-side.
             "probabilities": probabilities.get("ensemble", {}),
+            "raw_probabilities": probabilities.get("raw_ensemble", {}),
             "model_probabilities": probabilities.get("models", {}),
             "signal": signal,
             "signal_label": signal_label,

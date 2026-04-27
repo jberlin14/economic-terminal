@@ -22,6 +22,7 @@ from loguru import logger
 from sklearn.preprocessing import StandardScaler
 
 from .backtest import run_walk_forward
+from .calibration import apply_calibrator, fit_calibrator
 from .data_builder import RecessionDataBuilder
 from .features import HORIZONS
 from .persistence import save_model, load_model
@@ -68,6 +69,13 @@ class RecessionModel:
         # oof_probs[horizon] = np.ndarray of length n_samples (NaN where untested),
         # or None if not populated (e.g. legacy load)
         self.oof_probs: Dict[int, Optional[np.ndarray]] = {}
+        # calibrators[horizon] = fitted Platt/Isotonic calibrator (or None for
+        # legacy loads / un-trained horizons). Calibrators are fit on the
+        # walk-forward OOF probabilities and applied at predict time so the
+        # published `calibrated_ensemble` is an honest probability.
+        self.calibrators: Dict[int, Any] = {}
+        self.calibration_method: Dict[int, str] = {}
+        self.calibration_brier: Dict[int, Dict[str, float]] = {}
         self.training_metadata: Dict[str, Any] = {}
         self._loaded = False
 
@@ -217,6 +225,27 @@ class RecessionModel:
                 f"({len(wf['fold_metrics'])} folds)"
             )
 
+        # Fit per-horizon calibrators on the OOF probs from the walk-forward
+        # backtest. Picks Platt vs isotonic by Brier on the same OOF set.
+        logger.info("Fitting per-horizon ensemble calibrators (Platt vs isotonic by Brier)...")
+        for horizon in HORIZONS:
+            oof = self.oof_probs.get(horizon)
+            if oof is None:
+                logger.warning(f"  No OOF probs for {horizon}m — skipping calibrator fit")
+                self.calibrators[horizon] = None
+                continue
+            target_col = f"recession_{horizon}m"
+            y_h = df[target_col].values.astype(int)
+            calibrator, method, brier_comparison = fit_calibrator(oof, y_h)
+            self.calibrators[horizon] = calibrator
+            self.calibration_method[horizon] = method
+            self.calibration_brier[horizon] = brier_comparison
+            logger.success(
+                f"  Calibrator {horizon}m: method={method}, "
+                f"brier raw={brier_comparison['raw']} -> "
+                f"calibrated={brier_comparison.get(method, 'n/a')}"
+            )
+
         self.training_metadata = {
             "trained_at": datetime.utcnow().isoformat(),
             "data_start": data_meta["start_date"],
@@ -255,8 +284,9 @@ class RecessionModel:
 
         X = np.array([[features.get(f, 0.0) for f in self.feature_names]])
 
-        model_probs = {}
-        ensemble = {}
+        model_probs: Dict[str, Dict[str, float]] = {}
+        raw_ensemble: Dict[str, float] = {}
+        calibrated_ensemble: Dict[str, float] = {}
 
         for horizon in HORIZONS:
             X_scaled = self.scalers[horizon].transform(X)
@@ -290,16 +320,30 @@ class RecessionModel:
                 except Exception as e:
                     logger.warning(f"Prediction failed for {model_type}/{horizon}m: {e}")
 
-            # Ensemble = AUC-weighted average
             if horizon_probs and horizon_weights:
                 w = np.array(horizon_weights)
                 w = w / w.sum()  # re-normalize in case a model was skipped
-                ensemble[f"{horizon}m"] = round(float(np.average(horizon_probs, weights=w)), 1)
+                # horizon_probs are already in percent (0-100). Convert to
+                # [0,1] for the calibrator and back to percent for output.
+                raw_avg_pct = float(np.average(horizon_probs, weights=w))
+                raw_avg = raw_avg_pct / 100.0
+                calibrator = self.calibrators.get(horizon)
+                if calibrator is not None:
+                    calibrated = float(apply_calibrator(calibrator, np.array([raw_avg]))[0])
+                else:
+                    calibrated = raw_avg
+                raw_ensemble[f"{horizon}m"] = round(raw_avg_pct, 1)
+                calibrated_ensemble[f"{horizon}m"] = round(calibrated * 100, 1)
             else:
-                ensemble[f"{horizon}m"] = 0.0
+                raw_ensemble[f"{horizon}m"] = 0.0
+                calibrated_ensemble[f"{horizon}m"] = 0.0
 
         return {
-            "ensemble": ensemble,
+            # `ensemble` aliases the calibrated value — callers that read
+            # `result["ensemble"][<horizon>]` get the canonical probability.
+            "ensemble": calibrated_ensemble,
+            "raw_ensemble": raw_ensemble,
+            "calibrated_ensemble": calibrated_ensemble,
             "models": model_probs,
         }
 
@@ -340,10 +384,20 @@ class RecessionModel:
             if all_probs:
                 w = np.array(all_weights)
                 w = w / w.sum()
-                ensemble_probs = np.average(all_probs, axis=0, weights=w)
-                result[f"prob_{horizon}m"] = (ensemble_probs * 100).round(1)
+                # Per-model probs are in [0,1]. Weighted average gives the
+                # raw ensemble in [0,1]. Apply the calibrator (if any) on
+                # the raw [0,1] values; both columns published in percent.
+                ensemble_raw = np.average(all_probs, axis=0, weights=w)
+                calibrator = self.calibrators.get(horizon)
+                if calibrator is not None:
+                    ensemble_cal = apply_calibrator(calibrator, ensemble_raw)
+                else:
+                    ensemble_cal = ensemble_raw
+                result[f"prob_{horizon}m"] = (ensemble_cal * 100).round(1)
+                result[f"prob_{horizon}m_raw"] = (ensemble_raw * 100).round(1)
             else:
                 result[f"prob_{horizon}m"] = 0.0
+                result[f"prob_{horizon}m_raw"] = 0.0
 
         if "USREC" in df.columns:
             result["actual_recession"] = df["USREC"].values
@@ -388,6 +442,14 @@ class RecessionModel:
             },
             "ensemble_weights": {
                 f"{h}m": self.ensemble_weights.get(h, {})
+                for h in HORIZONS
+            },
+            "calibration_method": {
+                f"{h}m": self.calibration_method.get(h)
+                for h in HORIZONS
+            },
+            "calibration_brier_comparison": {
+                f"{h}m": self.calibration_brier.get(h, {})
                 for h in HORIZONS
             },
             "model_types": MODEL_TYPES,
