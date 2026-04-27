@@ -31,6 +31,8 @@ from .features import (
     CORE_REQUIRED,
     engineer_features,
     get_feature_columns,
+    get_release_lag,
+    get_series_name,
 )
 
 
@@ -108,7 +110,7 @@ class RecessionDataBuilder:
     def _fetch_all_series(self) -> Dict[str, pd.Series]:
         """Fetch all feature series from FRED."""
         raw = {}
-        for series_id, name in FEATURE_SERIES.items():
+        for series_id in FEATURE_SERIES:
             try:
                 data = self.fred.get_series(
                     series_id,
@@ -117,8 +119,8 @@ class RecessionDataBuilder:
                 if data is not None and len(data) > 0:
                     raw[series_id] = data
                     logger.debug(
-                        f"Fetched {series_id} ({name}): {len(data)} obs "
-                        f"from {data.index.min().date()}"
+                        f"Fetched {series_id} ({get_series_name(series_id)}): "
+                        f"{len(data)} obs from {data.index.min().date()}"
                     )
                 else:
                     logger.warning(f"Empty data for {series_id}")
@@ -232,6 +234,16 @@ class RecessionDataBuilder:
             else:
                 resampled = s.resample("ME").last()
             monthly[series_id] = resampled
+
+        # Apply per-series release-lag dating: drop the most recent `lag`
+        # months of each series so the live snapshot row matches the as-of
+        # state of an end-of-month training row. Without this, the live
+        # row mixes series at different vintages (e.g. CPI for M-1 with
+        # PAYEMS for M) — a combination that never appears in training.
+        for series_id in list(monthly.keys()):
+            lag = get_release_lag(series_id)
+            if lag > 0 and len(monthly[series_id]) > lag:
+                monthly[series_id] = monthly[series_id].iloc[:-lag]
 
         df = pd.DataFrame(monthly)
 

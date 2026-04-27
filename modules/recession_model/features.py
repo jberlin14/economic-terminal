@@ -7,7 +7,7 @@ used by both training (`build_dataset`) and live prediction
 lives in one place, not split across data-builder methods.
 """
 
-from typing import List
+from typing import Any, Dict, List
 
 import numpy as np
 import pandas as pd
@@ -16,67 +16,112 @@ import pandas as pd
 # ──────────────────────────────────────────────
 # FRED Series Configuration
 # ──────────────────────────────────────────────
+#
+# Each entry is keyed by FRED series id and carries:
+#   - "name": human-readable label (used in logs/UI)
+#   - "release_lag_months": months between the observation date and the
+#     date FRED publishes that observation. Used at LIVE PREDICTION time
+#     to drop the last `lag` months from each series so the snapshot row
+#     matches the as-of state of an end-of-month training row.
+#
+# Lag conventions (from FRED publication schedules):
+#   * Daily yields/spreads/VIX/oil/dollar: 0
+#   * Weekly financial conditions (NFCI/ANFCI/STLFSI2): 0
+#   * Same-month labor releases (UNRATE/PAYEMS/CIVPART/EMRATIO/U6/AWHMAN): 0
+#   * Initial claims (ICSA), sentiment (UMCSENT): 0
+#   * Most monthly indicators released in M+1: 1
+#   * OECD CLI: 2
+#   * Quarterly debt service: 3
+#   * TEDRATE is discontinued (last obs 2022) but kept at 0 for legacy.
 
 # Tier 1: Available from 1960s — core macro indicators
-TIER1_SERIES = {
-    "UNRATE": "Unemployment Rate",
-    "PAYEMS": "Total Nonfarm Payrolls",
-    "INDPRO": "Industrial Production Index",
-    "CPIAUCSL": "CPI All Items",
-    "FEDFUNDS": "Federal Funds Rate",
-    "HOUST": "Housing Starts",
-    "PERMIT": "Building Permits",
-    "M2SL": "M2 Money Supply",
-    "USALOLITONOSTSAM": "OECD Composite Leading Indicator",
-    "AWHMAN": "Avg Weekly Hours Manufacturing",
-    "M1SL": "M1 Money Supply",
-    "PPIACO": "PPI All Commodities",
-    "WHLSLRIMSA": "Wholesale Inventories/Sales Ratio",
-    "CIVPART": "Labor Force Participation Rate",
-    "EMRATIO": "Employment-Population Ratio",
-    "LNS12300060": "Prime-Age (25-54) Employment-Population Ratio",
+TIER1_SERIES: Dict[str, Dict[str, Any]] = {
+    "UNRATE": {"name": "Unemployment Rate", "release_lag_months": 0},
+    "PAYEMS": {"name": "Total Nonfarm Payrolls", "release_lag_months": 0},
+    "INDPRO": {"name": "Industrial Production Index", "release_lag_months": 1},
+    "CPIAUCSL": {"name": "CPI All Items", "release_lag_months": 1},
+    "FEDFUNDS": {"name": "Federal Funds Rate", "release_lag_months": 0},
+    "HOUST": {"name": "Housing Starts", "release_lag_months": 1},
+    "PERMIT": {"name": "Building Permits", "release_lag_months": 1},
+    "M2SL": {"name": "M2 Money Supply", "release_lag_months": 1},
+    "USALOLITONOSTSAM": {"name": "OECD Composite Leading Indicator", "release_lag_months": 2},
+    "AWHMAN": {"name": "Avg Weekly Hours Manufacturing", "release_lag_months": 0},
+    "M1SL": {"name": "M1 Money Supply", "release_lag_months": 1},
+    "PPIACO": {"name": "PPI All Commodities", "release_lag_months": 1},
+    "WHLSLRIMSA": {"name": "Wholesale Inventories/Sales Ratio", "release_lag_months": 1},
+    "CIVPART": {"name": "Labor Force Participation Rate", "release_lag_months": 0},
+    "EMRATIO": {"name": "Employment-Population Ratio", "release_lag_months": 0},
+    "LNS12300060": {"name": "Prime-Age (25-54) Employment-Population Ratio", "release_lag_months": 0},
 }
 
 # Tier 2: Available from late 1960s-1970s
-TIER2_SERIES = {
-    "UMCSENT": "U of Michigan Consumer Sentiment",
-    "ICSA": "Initial Jobless Claims",
-    "W875RX1": "Real Personal Income ex Transfers",
-    "TOTALSL": "Total Consumer Credit Outstanding",
-    "DGORDER": "Durable Goods New Orders",
-    "NEWORDER": "Manufacturers New Orders",
-    "CPILFESL": "Core CPI (Less Food & Energy)",
-    "PCEPILFE": "Core PCE Price Index",
-    "BOGZ1FL072052006Q": "Household Debt Service Ratio",
+TIER2_SERIES: Dict[str, Dict[str, Any]] = {
+    "UMCSENT": {"name": "U of Michigan Consumer Sentiment", "release_lag_months": 0},
+    "ICSA": {"name": "Initial Jobless Claims", "release_lag_months": 0},
+    "W875RX1": {"name": "Real Personal Income ex Transfers", "release_lag_months": 1},
+    "TOTALSL": {"name": "Total Consumer Credit Outstanding", "release_lag_months": 1},
+    "DGORDER": {"name": "Durable Goods New Orders", "release_lag_months": 1},
+    "NEWORDER": {"name": "Manufacturers New Orders", "release_lag_months": 1},
+    "CPILFESL": {"name": "Core CPI (Less Food & Energy)", "release_lag_months": 1},
+    "PCEPILFE": {"name": "Core PCE Price Index", "release_lag_months": 1},
+    "BOGZ1FL072052006Q": {"name": "Household Debt Service Ratio", "release_lag_months": 3},
 }
 
 # Tier 3: Available from mid-1970s+
-TIER3_SERIES = {
-    "DGS10": "10-Year Treasury Yield",
-    "DGS2": "2-Year Treasury Yield",
-    "T10Y2Y": "10Y-2Y Treasury Spread",
-    "DGS3MO": "3-Month Treasury Yield",
-    "NFCI": "Chicago Fed National Financial Conditions",
-    "ANFCI": "Adjusted NFCI",
-    "TEDRATE": "TED Spread (3mo LIBOR - 3mo T-bill)",
-    "VIXCLS": "VIX Volatility Index",
-    "U6RATE": "U-6 Broad Unemployment Rate",
+TIER3_SERIES: Dict[str, Dict[str, Any]] = {
+    "DGS10": {"name": "10-Year Treasury Yield", "release_lag_months": 0},
+    "DGS2": {"name": "2-Year Treasury Yield", "release_lag_months": 0},
+    "T10Y2Y": {"name": "10Y-2Y Treasury Spread", "release_lag_months": 0},
+    "DGS3MO": {"name": "3-Month Treasury Yield", "release_lag_months": 0},
+    "NFCI": {"name": "Chicago Fed National Financial Conditions", "release_lag_months": 0},
+    "ANFCI": {"name": "Adjusted NFCI", "release_lag_months": 0},
+    "TEDRATE": {"name": "TED Spread (3mo LIBOR - 3mo T-bill)", "release_lag_months": 0},
+    "VIXCLS": {"name": "VIX Volatility Index", "release_lag_months": 0},
+    "U6RATE": {"name": "U-6 Broad Unemployment Rate", "release_lag_months": 0},
 }
 
 # Tier 4: Available from 1980s+
-TIER4_SERIES = {
-    "T10Y3M": "10Y-3M Treasury Spread",
-    "BAA10Y": "BAA Corp Bond - 10Y Treasury Spread",
-    "BAAFFM": "BAA Corp Bond - Fed Funds Spread",
-    "DCOILWTICO": "WTI Crude Oil Price",
-    "DTWEXBGS": "Trade Weighted US Dollar Index (Broad)",
-    "STLFSI2": "St Louis Fed Financial Stress Index",
-    "JTSJOL": "Job Openings (JOLTS)",
-    "JTSQUR": "Quits Rate (JOLTS)",
+TIER4_SERIES: Dict[str, Dict[str, Any]] = {
+    "T10Y3M": {"name": "10Y-3M Treasury Spread", "release_lag_months": 0},
+    "BAA10Y": {"name": "BAA Corp Bond - 10Y Treasury Spread", "release_lag_months": 0},
+    "BAAFFM": {"name": "BAA Corp Bond - Fed Funds Spread", "release_lag_months": 0},
+    "DCOILWTICO": {"name": "WTI Crude Oil Price", "release_lag_months": 0},
+    "DTWEXBGS": {"name": "Trade Weighted US Dollar Index (Broad)", "release_lag_months": 0},
+    "STLFSI2": {"name": "St Louis Fed Financial Stress Index", "release_lag_months": 0},
+    "JTSJOL": {"name": "Job Openings (JOLTS)", "release_lag_months": 1},
+    "JTSQUR": {"name": "Quits Rate (JOLTS)", "release_lag_months": 1},
 }
 
 # All series combined
-FEATURE_SERIES = {**TIER1_SERIES, **TIER2_SERIES, **TIER3_SERIES, **TIER4_SERIES}
+FEATURE_SERIES: Dict[str, Dict[str, Any]] = {
+    **TIER1_SERIES, **TIER2_SERIES, **TIER3_SERIES, **TIER4_SERIES
+}
+
+# Default release lag for any series id not present in FEATURE_SERIES.
+DEFAULT_RELEASE_LAG_MONTHS = 1
+
+
+def get_release_lag(series_id: str) -> int:
+    """Return the FRED release lag in months for a series.
+
+    Defaults to ``DEFAULT_RELEASE_LAG_MONTHS`` for unknown ids.
+    """
+    info = FEATURE_SERIES.get(series_id)
+    if isinstance(info, dict):
+        return int(info.get("release_lag_months", DEFAULT_RELEASE_LAG_MONTHS))
+    return DEFAULT_RELEASE_LAG_MONTHS
+
+
+def get_series_name(series_id: str) -> str:
+    """Return the human-readable name (or the id itself if unknown)."""
+    info = FEATURE_SERIES.get(series_id)
+    if isinstance(info, dict):
+        return info.get("name", series_id)
+    if isinstance(info, str):
+        # Legacy compat — should not happen after the dict-shape change
+        # but cheap to support.
+        return info
+    return series_id
 
 # NBER recession indicator
 RECESSION_SERIES = "USREC"
