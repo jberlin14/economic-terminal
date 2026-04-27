@@ -4,6 +4,7 @@ import {
   Flame, Users, GitBranch, BarChart3, Activity, Globe, Info, ChevronDown,
 } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
+import { RecessionProbabilityCard } from '../components/RecessionProbabilityCard';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -425,6 +426,11 @@ export const RiskScorecard: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Recession Probability (canonical ML ensemble) */}
+      <div className="mb-6">
+        <RecessionProbabilityCard />
+      </div>
 
       {/* Composite Score Hero Section */}
       <div className="bg-terminal-panel border border-terminal-border rounded-lg p-6 mb-6">

@@ -6,6 +6,7 @@ import { CreditSpreadsPanel } from '../components/CreditSpreadsPanel';
 import { RiskAlertPanel } from '../components/RiskAlertPanel';
 import { NewsFeed } from '../components/NewsFeed';
 import { IntelligencePanel } from '../components/IntelligencePanel';
+import { RecessionProbabilityCard } from '../components/RecessionProbabilityCard';
 import { useWebSocket } from '../hooks/useWebSocket';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -117,6 +118,11 @@ export const Dashboard: React.FC = () => {
           <RiskAlertPanel alerts={data.active_alerts} />
         </div>
       )}
+
+      {/* Recession Probability (canonical ML ensemble) */}
+      <div className="mb-6">
+        <RecessionProbabilityCard />
+      </div>
 
       {/* Main Grid */}
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
