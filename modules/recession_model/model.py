@@ -452,6 +452,10 @@ class RecessionModel:
                 f"{h}m": self.calibration_brier.get(h, {})
                 for h in HORIZONS
             },
+            "walk_forward_metrics": {
+                f"{h}m": self.walk_forward_metrics.get(h, {})
+                for h in HORIZONS
+            },
             "model_types": MODEL_TYPES,
             "horizons": [f"{h}m" for h in HORIZONS],
         }

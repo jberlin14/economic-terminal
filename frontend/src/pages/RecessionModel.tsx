@@ -39,8 +39,35 @@ interface ModelInfo {
   decision_tree_rules?: Record<string, TreeRule[]>;
   optimal_thresholds?: Record<string, Record<string, number>>;
   ensemble_weights?: Record<string, Record<string, number>>;
+  walk_forward_metrics?: Record<string, {
+    aggregate_metrics?: {
+      f1_mean: number; f1_std: number;
+      auc_mean: number; auc_std: number;
+      brier_mean: number; brier_std: number;
+    };
+    fold_metrics?: Array<{
+      fold: number;
+      f1: number;
+      auc_roc: number | null;
+      brier: number;
+    }>;
+    n_folds?: number;
+  }>;
+  calibration_method?: Record<string, string | null>;
+  calibration_brier_comparison?: Record<string, {
+    raw?: number;
+    platt?: number;
+    isotonic?: number;
+    identity?: number;
+  }>;
   horizons?: string[];
 }
+
+type WalkForwardAggregate = {
+  f1_mean: number; f1_std: number;
+  auc_mean: number; auc_std: number;
+  brier_mean: number; brier_std: number;
+};
 interface ProbabilityData {
   trained: boolean;
   probabilities?: Record<string, number>;
@@ -371,6 +398,35 @@ export const RecessionModel: React.FC = () => {
           </div>
         )}
       </div>
+
+      {/* Walk-forward Out-of-Sample Metrics */}
+      <div className="bg-terminal-panel border border-terminal-border rounded-lg p-6 mb-4">
+        <span className="text-[10px] text-terminal-text-dim font-mono uppercase tracking-wider mb-3 block">
+          Out-of-Sample Performance (Walk-Forward Backtest)
+        </span>
+        <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          {['3m', '6m', '12m'].map(h => {
+            const wf = modelInfo?.walk_forward_metrics?.[h];
+            return (
+              <WalkForwardBox
+                key={h}
+                horizon={h}
+                agg={wf?.aggregate_metrics}
+                nFolds={wf?.n_folds}
+              />
+            );
+          })}
+        </div>
+        <p className="text-[10px] text-terminal-text-dim mt-3">
+          Walk-forward folds train on expanding history and score on the next held-out window. Mean +/- std reported across folds.
+        </p>
+      </div>
+
+      {/* Calibration Panel */}
+      <CalibrationPanel
+        method={modelInfo?.calibration_method}
+        comparison={modelInfo?.calibration_brier_comparison}
+      />
 
       {/* Historical Chart */}
       {chartData.length > 0 && (
@@ -743,6 +799,114 @@ const FeatureImportanceChart: React.FC<{
           </span>
         </div>
       )}
+    </div>
+  );
+};
+
+// ──────────────────────────────────────────────
+// Walk-Forward Box
+// ──────────────────────────────────────────────
+
+const WalkForwardBox: React.FC<{
+  horizon: string;
+  agg?: WalkForwardAggregate;
+  nFolds?: number;
+}> = ({ horizon, agg, nFolds }) => {
+  if (!agg || nFolds === undefined || nFolds === 0) {
+    return (
+      <div className="bg-terminal-surface border border-terminal-border rounded p-3">
+        <div className="text-[10px] uppercase tracking-wide text-terminal-text-dim mb-1">
+          {horizon.replace('m', '-mo')}
+        </div>
+        <div className="text-xs text-terminal-text-dim italic">
+          No walk-forward results yet. Retrain to populate.
+        </div>
+      </div>
+    );
+  }
+  return (
+    <div className="bg-terminal-surface border border-terminal-border rounded p-3">
+      <div className="text-[10px] uppercase tracking-wide text-terminal-text-dim mb-2">
+        {horizon.replace('m', '-mo')} &middot; {nFolds} fold{nFolds === 1 ? '' : 's'}
+      </div>
+      <div className="grid grid-cols-3 gap-2 text-xs">
+        <div>
+          <div className="text-terminal-text-dim text-[10px]">F1</div>
+          <div className="text-terminal-text font-mono">
+            {agg.f1_mean.toFixed(3)}
+            <span className="text-terminal-text-dim"> &plusmn; {agg.f1_std.toFixed(3)}</span>
+          </div>
+        </div>
+        <div>
+          <div className="text-terminal-text-dim text-[10px]">AUC</div>
+          <div className="text-terminal-text font-mono">
+            {agg.auc_mean.toFixed(3)}
+            <span className="text-terminal-text-dim"> &plusmn; {agg.auc_std.toFixed(3)}</span>
+          </div>
+        </div>
+        <div>
+          <div className="text-terminal-text-dim text-[10px]">Brier</div>
+          <div className="text-terminal-text font-mono">
+            {agg.brier_mean.toFixed(4)}
+            <span className="text-terminal-text-dim"> &plusmn; {agg.brier_std.toFixed(4)}</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+// ──────────────────────────────────────────────
+// Calibration Panel
+// ──────────────────────────────────────────────
+
+const CalibrationPanel: React.FC<{
+  method?: Record<string, string | null>;
+  comparison?: Record<string, { raw?: number; platt?: number; isotonic?: number; identity?: number }>;
+}> = ({ method, comparison }) => {
+  const horizons = ['3m', '6m', '12m'];
+  const hasAny = method && horizons.some(h => method[h]);
+
+  return (
+    <div className="bg-terminal-panel border border-terminal-border rounded-lg p-4 mb-4">
+      <span className="text-[10px] text-terminal-text-dim font-mono uppercase tracking-wider mb-3 block">
+        Probability Calibration
+      </span>
+      <div className="space-y-1.5">
+        {horizons.map(h => {
+          const m = method?.[h] ?? null;
+          const c = comparison?.[h] ?? {};
+          if (!m) {
+            return (
+              <div key={h} className="flex items-center justify-between text-xs">
+                <span className="text-terminal-text-dim font-mono">{h.replace('m', '-mo')}</span>
+                <span className="text-terminal-text-dim italic">not calibrated (legacy model)</span>
+              </div>
+            );
+          }
+          const raw = c.raw;
+          const calibrated =
+            m === 'platt' ? c.platt :
+            m === 'isotonic' ? c.isotonic :
+            c.identity;
+          return (
+            <div key={h} className="flex items-center justify-between text-xs">
+              <span className="text-terminal-text-dim font-mono">{h.replace('m', '-mo')}</span>
+              <span className="text-terminal-text font-mono">
+                <span className="text-terminal-text-dim">{m} &middot; Brier </span>
+                {raw !== undefined ? raw.toFixed(4) : '—'}
+                <span className="text-terminal-text-dim"> &rarr; </span>
+                {calibrated !== undefined ? calibrated.toFixed(4) : '—'}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+      <p className="text-[10px] text-terminal-text-dim mt-3">
+        {hasAny
+          ? 'Calibrators are fit on out-of-fold predictions from the walk-forward backtest. Lower Brier = better-calibrated probabilities.'
+          : 'Calibration metadata is missing on this model. Retrain to compute Platt/isotonic calibrators.'}
+      </p>
     </div>
   );
 };
