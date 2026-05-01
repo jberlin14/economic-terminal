@@ -112,7 +112,11 @@ OTHER_INDICATORS = {
     'RSXFS': {'name': 'Retail Sales Ex Food Services', 'units': 'millions', 'frequency': 'monthly'},
     'UMCSENT': {'name': 'Consumer Sentiment (UMich)', 'units': 'index', 'frequency': 'monthly'},
     'HOUST': {'name': 'Housing Starts', 'units': 'thousands', 'frequency': 'monthly'},
+    'PERMIT': {'name': 'Building Permits', 'units': 'thousands', 'frequency': 'monthly'},
     'INDPRO': {'name': 'Industrial Production', 'units': 'index', 'frequency': 'monthly'},
+    'T5YIFR': {'name': '5y5y Forward Inflation Expectations', 'units': 'percent', 'frequency': 'daily'},
+    'JTSJOL': {'name': 'JOLTS Job Openings', 'units': 'thousands', 'frequency': 'monthly'},
+    'JTSQUR': {'name': 'JOLTS Quits Rate', 'units': 'percent', 'frequency': 'monthly'},
 }
 
 # Master mapping of report groups
