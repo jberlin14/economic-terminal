@@ -75,3 +75,17 @@ def test_save_load_round_trip(tmp_path, monkeypatch):
     p1 = m.predict(features)
     p2 = m2.predict(features)
     assert p1 == p2
+
+    # Phase 4.1: explain_prediction returns a per-horizon contribution
+    # breakdown built from logistic coefficients × scaled value.
+    explanation = m2.explain_prediction(features, top_k=5)
+    assert set(explanation.keys()) <= {"3m", "6m", "12m"}
+    for h, payload in explanation.items():
+        assert payload["model_used"] == "logistic"
+        for entry in payload["top_pushing_up"]:
+            assert entry["contribution"] >= 0
+            assert "feature" in entry
+            assert "scaled_value" in entry
+            assert "coefficient" in entry
+        for entry in payload["top_pulling_down"]:
+            assert entry["contribution"] <= 0

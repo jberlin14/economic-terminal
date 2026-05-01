@@ -274,6 +274,30 @@ class RiskScorecard:
         except Exception as e:
             logger.debug(f"Pillar scores persistence skipped: {e}")
 
+        # Phase 4.4: emit alerts on band crossings, drift, and Sahm trigger.
+        # Best-effort; alert evaluation never breaks the API response.
+        try:
+            from .alerts import evaluate_scorecard_alerts
+
+            drift_payload = None
+            ml = result.get("recession_ml")
+            if ml is not None:
+                # Pull the predictor's drift report if available — same call
+                # the dedicated recession page uses, just shared here.
+                try:
+                    from modules.recession_model.predictor import RecessionPredictor
+
+                    predictor = RecessionPredictor(self.db)
+                    full = predictor.get_current_probability()
+                    drift_payload = full.get("drift") if isinstance(full, dict) else None
+                except Exception:
+                    drift_payload = None
+            fired = evaluate_scorecard_alerts(self.db, result, drift=drift_payload)
+            if fired:
+                result["alerts_fired"] = fired
+        except Exception as e:
+            logger.debug(f"Alert evaluation skipped: {e}")
+
         return result
 
     def _persist_pillar_scores(self, result: Dict[str, Any]) -> None:

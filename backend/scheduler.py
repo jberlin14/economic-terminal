@@ -383,6 +383,76 @@ async def cleanup_old_data():
         logger.error(f"Cleanup failed: {e}")
 
 
+async def retrain_recession_model():
+    """
+    Phase 4.5: scheduled monthly retraining of the recession ensemble.
+
+    Runs in a thread so the async scheduler stays responsive. Logs but
+    doesn't crash on failure — model artifacts on disk continue to serve
+    predictions until the next successful retrain.
+    """
+    logger.info("Scheduled: Retraining recession model (monthly)...")
+    try:
+        from modules.recession_model import RecessionModel
+
+        def _train():
+            model = RecessionModel()
+            return model.train()
+
+        result = await asyncio.to_thread(_train)
+        logger.success(
+            "Monthly recession retrain complete: "
+            f"trained_at={result.get('metadata', {}).get('trained_at')}"
+        )
+    except Exception as e:
+        logger.error(f"Monthly recession retrain failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+async def check_drift_and_retrain():
+    """
+    Phase 4.5: drift-triggered retrain. Runs daily and only kicks off a
+    full retrain if the live drift score has been at 'alert' level for
+    multiple consecutive days. Avoids retraining on transient noise.
+    """
+    logger.info("Scheduled: Checking recession-model drift...")
+    try:
+        from modules.recession_model.predictor import RecessionPredictor
+        from modules.data_storage.database import get_db_context
+
+        with get_db_context() as db:
+            predictor = RecessionPredictor(db)
+            current = predictor.get_current_probability()
+            drift = (current or {}).get("drift") if isinstance(current, dict) else None
+            if not drift:
+                return
+            if drift.get("level") != "alert":
+                return
+
+            # Avoid runaway: only retrain at most once every 7 days even if
+            # drift remains in alert. We check the latest model metadata
+            # `trained_at` from the on-disk artifacts.
+            from modules.recession_model import RecessionModel
+            model = RecessionModel()
+            if model.load() and model.training_metadata.get("trained_at"):
+                from datetime import datetime as _dt, timedelta as _td
+                trained_at = _dt.fromisoformat(model.training_metadata["trained_at"])
+                if _dt.utcnow() - trained_at < _td(days=7):
+                    logger.info(
+                        "Drift in alert but model retrained <7d ago — skipping retrain"
+                    )
+                    return
+
+        logger.warning(
+            f"Drift level=alert (score={drift.get('drift_score')}, "
+            f"oob={drift.get('n_out_of_bounds')}); kicking off retrain."
+        )
+        await retrain_recession_model()
+    except Exception as e:
+        logger.error(f"Drift check / retrain failed: {e}")
+
+
 def start_scheduler():
     """Start the background scheduler with all jobs."""
     
@@ -482,6 +552,26 @@ def start_scheduler():
         CronTrigger(hour=3, minute=0, timezone='America/New_York'),
         id='data_cleanup',
         name='Data Cleanup',
+        replace_existing=True
+    )
+
+    # Phase 4.5: monthly retrain of the recession model — first day of
+    # each month at 4 AM ET (well after data cleanup, before market open).
+    scheduler.add_job(
+        retrain_recession_model,
+        CronTrigger(day=1, hour=4, minute=0, timezone='America/New_York'),
+        id='recession_monthly_retrain',
+        name='Recession Model Monthly Retrain',
+        replace_existing=True
+    )
+
+    # Phase 4.5: daily drift check — kicks off a retrain only if drift
+    # is at 'alert' level AND the previous retrain was >= 7 days ago.
+    scheduler.add_job(
+        check_drift_and_retrain,
+        CronTrigger(hour=4, minute=30, timezone='America/New_York'),
+        id='recession_drift_check',
+        name='Recession Model Drift Check',
         replace_existing=True
     )
 

@@ -100,12 +100,45 @@ interface UncertaintyBand {
   iqr?: number;
   n_models?: number;
 }
+interface DriftFeature {
+  feature: string;
+  value: number;
+  q01: number;
+  q25: number;
+  q75: number;
+  q99: number;
+  tail_distance: number;
+  out_of_bounds: boolean;
+}
+interface DriftReport {
+  per_feature?: DriftFeature[];
+  drift_score?: number;
+  n_out_of_bounds?: number;
+  level?: string;
+}
+interface ExplanationEntry {
+  feature: string;
+  value: number;
+  scaled_value: number;
+  coefficient: number;
+  contribution: number;
+}
+interface PerHorizonExplanation {
+  model_used?: string;
+  logit?: number;
+  intercept?: number;
+  top_pushing_up?: ExplanationEntry[];
+  top_pulling_down?: ExplanationEntry[];
+  n_active_features?: number;
+}
 interface ProbabilityData {
   trained: boolean;
   probabilities?: Record<string, number>;
   raw_probabilities?: Record<string, number>;
   model_probabilities?: Record<string, Record<string, number>>;
   uncertainty?: Record<string, UncertaintyBand>;
+  drift?: DriftReport;
+  explanation?: Record<string, PerHorizonExplanation>;
   signal?: string;
   signal_label?: string;
   decision_threshold_6m?: {
@@ -505,6 +538,12 @@ export const RecessionModel: React.FC = () => {
         operatingPoints={modelInfo?.operating_points}
         defaultThreshold={modelInfo?.default_threshold}
       />
+
+      {/* Drift Panel (Phase 2 §2.5) */}
+      <DriftPanel drift={probability?.drift} />
+
+      {/* Per-prediction Explanation (Phase 4.1) */}
+      <ExplanationPanel explanation={probability?.explanation} />
 
       {/* Historical Chart */}
       {chartData.length > 0 && (
@@ -1144,6 +1183,182 @@ const OperatingPointsPanel: React.FC<{
 };
 
 // ──────────────────────────────────────────────
+// Explanation Panel (Phase 4.1)
+// ──────────────────────────────────────────────
+
+const ExplanationPanel: React.FC<{
+  explanation?: Record<string, PerHorizonExplanation>;
+}> = ({ explanation }) => {
+  const horizons = ['3m', '6m', '12m'];
+  const [activeHorizon, setActiveHorizon] = useState<string>('6m');
+  const hasAny = explanation && horizons.some(h => (explanation[h]?.top_pushing_up?.length ?? 0) > 0);
+
+  if (!hasAny) {
+    return null;
+  }
+
+  const payload = explanation?.[activeHorizon];
+
+  return (
+    <div className="bg-terminal-panel border border-terminal-border rounded-lg p-4 mb-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-[10px] text-terminal-text-dim font-mono uppercase tracking-wider">
+          Why this probability — Top contributors (logistic)
+        </span>
+        <div className="flex gap-1">
+          {horizons.map(h => (
+            <button
+              key={h}
+              onClick={() => setActiveHorizon(h)}
+              className={`px-2.5 py-1 rounded text-[10px] font-mono transition-colors ${
+                activeHorizon === h
+                  ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
+                  : 'text-terminal-text-dim hover:bg-terminal-surface border border-transparent'
+              }`}
+            >
+              {h.replace('m', '-mo')}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {payload && (
+        <>
+          <div className="text-[10px] text-terminal-text-dim mb-3">
+            {payload.n_active_features} L1-active features at this horizon. Each row is
+            <span className="text-terminal-text mx-1">coef × scaled_value</span>
+            — the additive contribution to the logit. Positive = pushing recession probability UP.
+          </div>
+
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+            <div>
+              <span className="text-[10px] text-critical font-mono uppercase tracking-wider mb-2 block">
+                Pushing UP &uarr;
+              </span>
+              <table className="w-full text-xs font-mono">
+                <thead>
+                  <tr className="text-terminal-text-dim border-b border-terminal-border/50">
+                    <th className="text-left py-1 pr-2">Feature</th>
+                    <th className="text-right py-1 px-1">Value</th>
+                    <th className="text-right py-1 pl-1">Contrib</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(payload.top_pushing_up ?? []).map(e => (
+                    <tr key={e.feature} className="border-t border-terminal-border/30">
+                      <td className="py-1 pr-2 text-terminal-text truncate max-w-[180px]" title={e.feature}>{e.feature}</td>
+                      <td className="py-1 px-1 text-right text-terminal-text-dim">{e.value}</td>
+                      <td className="py-1 pl-1 text-right text-critical font-bold">+{e.contribution.toFixed(3)}</td>
+                    </tr>
+                  ))}
+                  {(payload.top_pushing_up ?? []).length === 0 && (
+                    <tr><td colSpan={3} className="py-2 text-terminal-text-dim italic">No positive contributors at this horizon.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+
+            <div>
+              <span className="text-[10px] text-positive font-mono uppercase tracking-wider mb-2 block">
+                Pulling DOWN &darr;
+              </span>
+              <table className="w-full text-xs font-mono">
+                <thead>
+                  <tr className="text-terminal-text-dim border-b border-terminal-border/50">
+                    <th className="text-left py-1 pr-2">Feature</th>
+                    <th className="text-right py-1 px-1">Value</th>
+                    <th className="text-right py-1 pl-1">Contrib</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {(payload.top_pulling_down ?? []).map(e => (
+                    <tr key={e.feature} className="border-t border-terminal-border/30">
+                      <td className="py-1 pr-2 text-terminal-text truncate max-w-[180px]" title={e.feature}>{e.feature}</td>
+                      <td className="py-1 px-1 text-right text-terminal-text-dim">{e.value}</td>
+                      <td className="py-1 pl-1 text-right text-positive font-bold">{e.contribution.toFixed(3)}</td>
+                    </tr>
+                  ))}
+                  {(payload.top_pulling_down ?? []).length === 0 && (
+                    <tr><td colSpan={3} className="py-2 text-terminal-text-dim italic">No negative contributors at this horizon.</td></tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+
+          <p className="text-[10px] text-terminal-text-dim mt-3">
+            Logit = sum of contributions + intercept ({payload.intercept ?? 0}). Probability = sigmoid(logit), then calibrated.
+            L1 regularization zeroes irrelevant features at training time, so this list is short by design.
+          </p>
+        </>
+      )}
+    </div>
+  );
+};
+
+// ──────────────────────────────────────────────
+// Drift Panel (Phase 2.5 surfaced in UI)
+// ──────────────────────────────────────────────
+
+const DriftPanel: React.FC<{ drift?: DriftReport }> = ({ drift }) => {
+  if (!drift || !drift.per_feature || drift.per_feature.length === 0) return null;
+
+  const levelStyles: Record<string, { box: string; label: string }> = {
+    ok: { box: 'border-positive/30 bg-positive/5', label: 'In distribution' },
+    warn: { box: 'border-warning/40 bg-warning/5', label: 'Moderate drift' },
+    alert: { box: 'border-critical/40 bg-critical/5', label: 'Significant drift' },
+  };
+  const style = levelStyles[drift.level ?? 'ok'] ?? levelStyles.ok;
+
+  return (
+    <div className={`rounded-lg p-4 mb-4 border ${style.box}`}>
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-[10px] font-mono uppercase tracking-wider">
+          Feature Drift vs Training Distribution
+        </span>
+        <span className="text-xs font-mono">
+          {style.label} &middot; score {drift.drift_score?.toFixed(2) ?? '—'}
+          {drift.n_out_of_bounds !== undefined && ` · ${drift.n_out_of_bounds} feature${drift.n_out_of_bounds === 1 ? '' : 's'} outside [P01, P99]`}
+        </span>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs font-mono">
+          <thead>
+            <tr className="text-terminal-text-dim border-b border-terminal-border/50">
+              <th className="text-left py-1 pr-2">Feature</th>
+              <th className="text-right py-1 px-1">Live</th>
+              <th className="text-right py-1 px-1">Train P25–P75</th>
+              <th className="text-right py-1 px-1">Tail dist</th>
+              <th className="text-right py-1 pl-1">Out of bounds</th>
+            </tr>
+          </thead>
+          <tbody>
+            {drift.per_feature.slice(0, 8).map(f => (
+              <tr key={f.feature} className="border-t border-terminal-border/30">
+                <td className="py-1 pr-2 text-terminal-text truncate max-w-[180px]" title={f.feature}>{f.feature}</td>
+                <td className="py-1 px-1 text-right text-terminal-text">{f.value}</td>
+                <td className="py-1 px-1 text-right text-terminal-text-dim">[{f.q25}, {f.q75}]</td>
+                <td className="py-1 px-1 text-right text-terminal-text">{f.tail_distance.toFixed(2)}</td>
+                <td className="py-1 pl-1 text-right">
+                  {f.out_of_bounds ? (
+                    <span className="text-critical">yes</span>
+                  ) : (
+                    <span className="text-terminal-text-dim">no</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      <p className="text-[10px] text-terminal-text-dim mt-3">
+        Tail distance is 0 when the live value sits between training P25 and P75; ramps to 1 outside [P01, P99]. A high score (≥0.5) means today's macro snapshot is in territory the model rarely saw during training — predictions become less reliable.
+      </p>
+    </div>
+  );
+};
+
+// ──────────────────────────────────────────────
 // Sub-components
 // ──────────────────────────────────────────────
 
@@ -1204,35 +1419,62 @@ const MethodologyPanel: React.FC = () => (
     </h3>
     <div className="space-y-3 text-xs text-terminal-text-dim leading-relaxed">
       <p>
-        This model trains <span className="text-terminal-text font-medium">four classifiers</span> on ~60 years of US economic data from FRED (back to 1960),
-        each forecasting recession probability at 3, 6, and 12-month horizons. The ensemble probability is the average across all models.
+        This model trains <span className="text-terminal-text font-medium">four classifiers</span> on ~60 years of US economic data from FRED (back to 1959),
+        each forecasting recession probability at 3, 6, and 12-month horizons. The ensemble probability is an AUC-weighted average, calibrated against
+        out-of-fold predictions, with a precision-target decision threshold.
       </p>
+
       <p>
         <span className="text-terminal-text font-medium">Models:</span>{' '}
-        <span className="text-blue-400">Logistic Regression</span> (balanced class weights, baseline linear),{' '}
-        <span className="text-purple-400">K-Nearest Neighbors</span> (distance-weighted, non-parametric),{' '}
+        <span className="text-blue-400">Logistic Regression</span> with <span className="text-terminal-text">L1 regularization</span> (zeroes irrelevant features for an honest sparse coefficient view),{' '}
+        <span className="text-purple-400">K-Nearest Neighbors</span> (distance-weighted, fit on a balanced under-sampled set),{' '}
         <span className="text-emerald-400">Random Forest</span> (balanced class weights, provides interpretable rules),{' '}
-        <span className="text-amber-400">Gradient Boosting</span> (sequential tree ensemble, strong on imbalanced data).
+        <span className="text-amber-400">Gradient Boosting</span> (sequential trees, fit with balanced sample weights).
       </p>
+
       <p>
-        <span className="text-terminal-text font-medium">Training data:</span> NBER recession dates (USREC) provide labels. 21 FRED series spanning yield curve spreads,
-        credit spreads (BAA-10Y), unemployment and Sahm Rule proxy, initial claims, nonfarm payrolls, industrial production, CPI inflation,
-        fed funds rate, durable goods, building permits, housing starts, consumer sentiment, real personal income, consumer credit, M2 money supply,
-        oil prices, and the OECD Leading Indicator. Each series is augmented with rolling averages, momentum, and year-over-year changes (~50+ features).
+        <span className="text-terminal-text font-medium">Training data:</span> NBER recession dates (USREC) provide labels.
+        43 FRED series spanning yield curve spreads, credit spreads, unemployment and the Sahm Rule proxy, initial claims, nonfarm payrolls, JOLTS openings/quits,
+        industrial production, CPI / Core PCE / PPI / 5y5y forward inflation expectations, fed funds rate, durable goods, building permits, housing starts,
+        consumer sentiment, real personal income, consumer credit, M2 money supply, oil prices, the OECD Leading Indicator, and financial conditions indices.
+        Each series is augmented with rolling means, momentum, and YoY changes — ~199 derived features. Pre-1986 rows for tier 3/4 series (VIX, BAA spreads,
+        JOLTS) get column-median imputation rather than zero-fill so the model isn't fed pseudo-data from eras the series didn't exist in.
       </p>
+
       <p>
-        <span className="text-terminal-text font-medium">Validation:</span> 60/40 time-ordered train/test split (no shuffling, no look-ahead bias).
-        Class weights are balanced to handle the low recession base rate (~15% of months). Per-model optimal thresholds are tuned to maximize F1 score
-        instead of using the default 0.5 cutoff, improving recall for recession detection.
+        <span className="text-terminal-text font-medium">Validation:</span> An expanding-window walk-forward backtest produces honest out-of-sample probabilities.
+        Each fold trains on history, evaluates on the next 12-month slice, and contributes its probabilities to a global out-of-fold (OOF) array. Reported metrics
+        (F1 / AUC / Brier mean ± std) come from these folds, not from a single train/test split.
       </p>
+
       <p>
-        <span className="text-terminal-text font-medium">Ensemble:</span> The final probability is an AUC-weighted average across all models.
-        Models with higher AUC (better discrimination) receive proportionally more weight in the ensemble, so strong performers
-        dominate while weak models are downweighted automatically.
+        <span className="text-terminal-text font-medium">Calibration:</span> For each horizon, Platt and isotonic calibrators are fit on the OOF probabilities and selected by mean
+        held-out Brier from a time-ordered K-fold split of the OOF set itself — this removes the in-sample optimism of fitting and scoring on the same data. The
+        chosen method is then refit on the full OOF set for production. Calibrated probabilities are the canonical output (the "ensemble" field); raw AUC-weighted
+        averages are exposed alongside for transparency.
       </p>
+
       <p>
-        <span className="text-terminal-text font-medium">Live predictions:</span> Current indicator values are pulled from the database with 12+ months of history
-        to compute proper momentum and change features. Each model generates a probability, weighted by AUC performance.
+        <span className="text-terminal-text font-medium">Decision threshold:</span> Instead of hard-coded 25% / 50% banding, each horizon publishes a precision-target threshold
+        ("precision &ge; 60% with max recall"). The full operating-point table (precision / recall / F1 at thresholds 0.10–0.70) is shown so users can pick their own
+        operating point. Predictions below the moderate floor (half the default threshold, minimum 15%) are labeled "Low"; between floor and threshold are "Moderate";
+        at or above are "Elevated".
+      </p>
+
+      <p>
+        <span className="text-terminal-text font-medium">Uncertainty &amp; drift:</span> The P25–P75 range across the four model heads is shown under each gauge — a wide range
+        signals model disagreement, narrow signals consensus. Live feature values are also scored against the training-window quantiles per feature; a high tail
+        distance or out-of-bounds count surfaces as a drift warning, since the model is in territory it rarely saw during training.
+      </p>
+
+      <p>
+        <span className="text-terminal-text font-medium">Per-prediction explanation:</span> The "Why this probability" panel decomposes the logistic logit into per-feature contributions
+        (coef × scaled value), separating features pushing the probability up from those pulling it down. L1 regularization keeps the active feature list short.
+      </p>
+
+      <p>
+        <span className="text-terminal-text font-medium">Live predictions:</span> Current FRED data is pulled with a 72-month lookback window and per-series release-lag dating (so
+        live snapshots match the as-of state of an end-of-month training row). Features are cached for one hour to avoid FRED rate-limiting.
       </p>
     </div>
   </div>

@@ -179,7 +179,7 @@ async def get_correlations():
 
 @router.get("/risk-scorecard")
 async def get_risk_scorecard(db: Session = Depends(get_db)):
-    """Get composite macro risk scorecard with 6 pillar breakdowns."""
+    """Get composite macro risk scorecard with 7 pillar breakdowns."""
     try:
         from modules.risk_scorecard import RiskScorecard
 
@@ -188,6 +188,25 @@ async def get_risk_scorecard(db: Session = Depends(get_db)):
 
     except Exception as e:
         logger.error(f"Risk scorecard error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/risk-scorecard/backtest")
+async def get_risk_scorecard_backtest(
+    lookahead_days: int = Query(365, ge=30, le=730),
+    db: Session = Depends(get_db),
+):
+    """
+    Phase 4.3: Back-test composite cutoff thresholds (50/60/67) against NBER
+    recession dates within `lookahead_days` after each historical journal
+    snapshot. Validates the published green/yellow/red bands.
+    """
+    try:
+        from modules.risk_scorecard.backtest import backtest_composite_cutoff
+
+        return backtest_composite_cutoff(db, lookahead_days=lookahead_days)
+    except Exception as e:
+        logger.error(f"Risk scorecard backtest error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 

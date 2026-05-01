@@ -455,6 +455,79 @@ class RecessionModel:
             "uncertainty": uncertainty_bands,
         }
 
+    def explain_prediction(
+        self,
+        features: Dict[str, float],
+        top_k: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        Phase 4.1: Per-prediction explanation using L1 logistic coefficients.
+
+        For each horizon, computes per-feature contribution to the logit:
+            contribution_i = coef_i * scaled_value_i
+        Then ranks by absolute contribution and returns the top-K positive
+        (pushing recession probability UP) and top-K negative (pulling it
+        DOWN). Logistic is the cleanest base for this because L1 already
+        zeroed irrelevant features at training time (Phase 2.2).
+
+        Returns:
+          {
+            "<horizon>m": {
+              "model_used": "logistic",
+              "logit": float,
+              "intercept": float,
+              "top_pushing_up":   [{feature, value, scaled_value, coefficient, contribution}, ...],
+              "top_pulling_down": [{feature, value, scaled_value, coefficient, contribution}, ...],
+            }
+          }
+        Returns empty dict if the model isn't trained or logistic isn't
+        present (e.g. legacy single-model artifact).
+        """
+        if not self.is_trained:
+            return {}
+
+        out: Dict[str, Any] = {}
+        x_raw = np.array([[features.get(f, 0.0) for f in self.feature_names]])
+
+        for horizon in HORIZONS:
+            scaler = self.scalers.get(horizon)
+            logistic = (self.models.get(horizon) or {}).get("logistic")
+            if scaler is None or logistic is None or not hasattr(logistic, "coef_"):
+                continue
+
+            x_scaled = scaler.transform(x_raw)[0]
+            coefs = logistic.coef_[0] if logistic.coef_.ndim > 1 else logistic.coef_
+            intercept = float(logistic.intercept_[0]) if hasattr(logistic, "intercept_") else 0.0
+
+            contributions = coefs * x_scaled
+            # Build the feature list with everything we need for the UI.
+            entries = []
+            for i, name in enumerate(self.feature_names):
+                if abs(coefs[i]) < 1e-12:
+                    continue  # L1-zeroed feature; not meaningful to display
+                entries.append({
+                    "feature": name,
+                    "value": round(float(features.get(name, 0.0)), 4),
+                    "scaled_value": round(float(x_scaled[i]), 3),
+                    "coefficient": round(float(coefs[i]), 4),
+                    "contribution": round(float(contributions[i]), 4),
+                })
+
+            entries_pos = [e for e in entries if e["contribution"] > 0]
+            entries_neg = [e for e in entries if e["contribution"] < 0]
+            entries_pos.sort(key=lambda e: -e["contribution"])
+            entries_neg.sort(key=lambda e: e["contribution"])
+
+            out[f"{horizon}m"] = {
+                "model_used": "logistic",
+                "logit": round(float(np.sum(contributions) + intercept), 4),
+                "intercept": round(intercept, 4),
+                "top_pushing_up": entries_pos[:top_k],
+                "top_pulling_down": entries_neg[:top_k],
+                "n_active_features": len(entries),
+            }
+        return out
+
     def predict_history(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Generate historical ensemble probability series for charting.

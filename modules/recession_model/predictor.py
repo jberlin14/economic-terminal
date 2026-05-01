@@ -89,6 +89,13 @@ class RecessionPredictor:
             top_features=top_features,
         )
 
+        # Phase 4.1: per-prediction explanation via logistic coefficient × value.
+        try:
+            explanation = self.model.explain_prediction(features, top_k=10)
+        except Exception as e:
+            logger.debug(f"Per-prediction explanation skipped: {e}")
+            explanation = {}
+
         prob_6m_pct = probabilities.get("ensemble", {}).get("6m", 0)
 
         # Default threshold for the 6m horizon comes from the calibrated
@@ -131,6 +138,7 @@ class RecessionPredictor:
                 for k, v in features.items()
             },
             "drift": drift,
+            "explanation": explanation,
             "model_info": self.model.get_model_info(),
         }
 
