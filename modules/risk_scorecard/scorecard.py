@@ -54,6 +54,31 @@ def _color_for_score(score: float) -> str:
     return "red"
 
 
+def _trend_from_series(values: List[Optional[float]], delta_threshold: float = 3.0) -> str:
+    """
+    Classify a short score series as improving / deteriorating / stable.
+
+    Risk pillars are 0-100 where higher = worse. So a series moving UP =
+    risk DETERIORATING, moving DOWN = risk IMPROVING.
+
+    Compares the mean of the most-recent 3 entries to the mean of the
+    oldest 3. None values are skipped. Returns 'stable' if either window
+    is empty or the absolute delta is below `delta_threshold` points.
+    """
+    cleaned = [float(v) for v in values if v is not None]
+    if len(cleaned) < 2:
+        return "stable"
+    n = min(3, len(cleaned))
+    recent = cleaned[-n:]
+    older = cleaned[:n]
+    diff = (sum(recent) / len(recent)) - (sum(older) / len(older))
+    if diff > delta_threshold:
+        return "deteriorating"
+    if diff < -delta_threshold:
+        return "improving"
+    return "stable"
+
+
 class RiskScorecard:
     """Computes composite macro risk scorecard from market data."""
 
@@ -113,26 +138,29 @@ class RiskScorecard:
         sparkline_data = self._get_historical_sparklines()
 
         # Determine composite trend from sparklines
-        composite_trend = "stable"
-        if sparkline_data and len(sparkline_data) >= 2:
-            recent_avg = sum(s["composite"] for s in sparkline_data[-3:]) / min(3, len(sparkline_data))
-            older_avg = sum(s["composite"] for s in sparkline_data[:3]) / min(3, len(sparkline_data))
-            diff = recent_avg - older_avg
-            if diff > 3:
-                composite_trend = "deteriorating"
-            elif diff < -3:
-                composite_trend = "improving"
+        composite_series = [s.get("composite") for s in sparkline_data] if sparkline_data else []
+        composite_trend = _trend_from_series(composite_series)
 
-        # Attach sparkline data to pillars
+        # Attach sparkline data + sparkline-derived trend to pillars.
+        # For pillars that hard-code "stable" (credit / volatility /
+        # geopolitical), override with the sparkline-derived trend so the
+        # arrows reflect actual movement (Phase 1 §1.5). Pillars that
+        # derive their own meaningful trend from indicator dynamics
+        # (inflation, labor, yield curve) keep their existing label.
+        SPARKLINE_OVERRIDE_PILLARS = {"credit", "volatility", "geopolitical"}
         for pillar in pillars:
             pid = pillar["id"]
+            pillar_series = [s.get(pid) for s in sparkline_data] if sparkline_data else []
             pillar["sparkline"] = [
-                s.get(pid, pillar["score"]) for s in sparkline_data
-            ] if sparkline_data else [pillar["score"]]
+                v if v is not None else pillar["score"]
+                for v in pillar_series
+            ] if pillar_series else [pillar["score"]]
+            if pid in SPARKLINE_OVERRIDE_PILLARS:
+                pillar["trend"] = _trend_from_series(pillar_series)
 
         elapsed = int((time.time() - start) * 1000)
 
-        return {
+        result = {
             "composite_score": composite,
             "composite_color": _color_for_score(composite),
             "composite_trend": composite_trend,
@@ -142,6 +170,62 @@ class RiskScorecard:
             "assessed_at": get_current_time().isoformat(),
             "elapsed_ms": elapsed,
         }
+
+        # Persist today's pillar scores to the journal so the sparkline reads
+        # historical values that match live multi-component scoring (Phase 1
+        # §1.4). Best-effort: never let a journal write break the API response.
+        try:
+            self._persist_pillar_scores(result)
+        except Exception as e:
+            logger.debug(f"Pillar scores persistence skipped: {e}")
+
+        return result
+
+    def _persist_pillar_scores(self, result: Dict[str, Any]) -> None:
+        """Upsert today's scorecard into the journal's pillar_scores_snapshot column.
+
+        Stores a compact snapshot:
+          {
+            composite, composite_color, composite_trend,
+            pillars: {<id>: {score, color, trend}},
+          }
+        Trends are included so the sparkline reader can show today's pillar
+        trend even if the live derivation drifts vs. the stored snapshot.
+        """
+        from modules.data_storage.schema import AIMarketJournal
+
+        today = get_current_time().date()
+        compact = {
+            "composite": result["composite_score"],
+            "composite_color": result["composite_color"],
+            "composite_trend": result["composite_trend"],
+            "pillars": {
+                p["id"]: {
+                    "score": p["score"],
+                    "color": p["color"],
+                    "trend": p.get("trend"),
+                }
+                for p in result["pillars"]
+            },
+        }
+
+        existing = self.db.query(AIMarketJournal).filter(
+            AIMarketJournal.date == today
+        ).first()
+        if existing:
+            existing.pillar_scores_snapshot = compact
+            self.db.commit()
+            return
+
+        # No journal entry yet for today — create a minimal stub so the
+        # sparkline picks up today's value once the journal job runs and
+        # fills in the rest. Other fields stay null.
+        stub = AIMarketJournal(
+            date=today,
+            pillar_scores_snapshot=compact,
+        )
+        self.db.add(stub)
+        self.db.commit()
 
     # ──────────────────────────────────────────
     # Pillar Scorers
@@ -576,7 +660,17 @@ class RiskScorecard:
         return result
 
     def _get_historical_sparklines(self, days: int = 14) -> List[Dict]:
-        """Reconstruct historical pillar scores from journal snapshots."""
+        """
+        Read historical pillar scores from journal snapshots.
+
+        Preferred path: read `pillar_scores_snapshot` directly — these are the
+        same multi-component scores published live (Phase 1 §1.4).
+
+        Fallback path (for journal entries pre-dating §1.4): reconstruct an
+        approximate pillar score from the indicator_snapshot using a single
+        component per pillar. This drifts from live values but keeps the
+        sparkline non-empty during the migration window.
+        """
         try:
             from modules.market_summary.journal import MarketJournal
 
@@ -587,33 +681,58 @@ class RiskScorecard:
 
             sparkline_data = []
             for entry in reversed(entries):  # chronological order
+                stored = entry.pillar_scores_snapshot or {}
+                stored_pillars = stored.get("pillars") if isinstance(stored, dict) else None
+
+                if stored_pillars:
+                    # Preferred path — published scores. Today's value matches
+                    # the live pillar value so trend math is consistent.
+                    day_scores = {"date": entry.date.isoformat()}
+                    for pid in PILLAR_WEIGHTS:
+                        p = stored_pillars.get(pid)
+                        day_scores[pid] = (
+                            round(float(p.get("score")), 1)
+                            if isinstance(p, dict) and p.get("score") is not None
+                            else None
+                        )
+                    composite = stored.get("composite")
+                    if composite is not None:
+                        day_scores["composite"] = round(float(composite), 1)
+                    else:
+                        # Derive from stored pillars on the fly.
+                        avail = {k: v for k, v in day_scores.items() if k != "date" and v is not None}
+                        if avail:
+                            weights = {k: PILLAR_WEIGHTS.get(k, 0.15) for k in avail}
+                            total_w = sum(weights.values())
+                            day_scores["composite"] = round(
+                                sum(avail[k] * weights[k] for k in avail) / total_w, 1
+                            )
+                        else:
+                            day_scores["composite"] = 50
+                    sparkline_data.append(day_scores)
+                    continue
+
+                # Fallback: legacy reconstruction from indicator_snapshot.
                 snapshot = entry.indicator_snapshot or {}
                 derived = snapshot.get("derived", {})
 
-                # Reconstruct approximate pillar scores from snapshot data
                 day_scores = {"date": entry.date.isoformat()}
 
-                # Inflation (from CPI YoY in snapshot)
                 cpi_yoy = derived.get("cpi_yoy")
                 day_scores["inflation"] = round(_linear_scale(cpi_yoy, 1.5, 6.0), 1) if cpi_yoy else None
 
-                # Labor (from Sahm rule in snapshot)
                 sahm = derived.get("sahm_rule")
                 day_scores["labor"] = round(_linear_scale(sahm, 0, 0.8), 1) if sahm else None
 
-                # Yield curve (from spreads in snapshot)
                 spread = snapshot.get("spreads", {}).get("10y2y")
                 day_scores["yield_curve"] = round(_linear_scale(-spread, -2.0, 1.0), 1) if spread is not None else None
 
-                # Credit (from stress level)
                 stress = snapshot.get("credit_stress", "NORMAL")
                 day_scores["credit"] = {"NORMAL": 15, "ELEVATED": 55, "HIGH": 85}.get(stress, 40)
 
-                # Volatility / Geopolitical — not in journal, use current as placeholder
                 day_scores["volatility"] = None
                 day_scores["geopolitical"] = None
 
-                # Composite (from available scores)
                 available = {k: v for k, v in day_scores.items() if k != "date" and v is not None}
                 if available:
                     weights = {k: PILLAR_WEIGHTS.get(k, 0.15) for k in available}

@@ -107,25 +107,72 @@ def get_db_context() -> Generator[Session, None, None]:
 def init_db() -> None:
     """
     Initialize database tables.
-    
+
     Creates all tables defined in schema.py if they don't exist.
     Safe to call multiple times - won't destroy existing data.
     """
     from .schema import Base
-    
+
     logger.info(f"Initializing database: {DATABASE_URL[:50]}...")
-    
+
     try:
         Base.metadata.create_all(bind=engine)
         logger.success("Database tables created successfully!")
-        
+
         # Log created tables
         for table_name in Base.metadata.tables.keys():
             logger.info(f"  ✓ Table: {table_name}")
-            
+
+        # Idempotent column additions for in-place migrations. Safe to call
+        # repeatedly — each helper checks for the column and skips if present.
+        _ensure_column(
+            table="ai_market_journal",
+            column="pillar_scores_snapshot",
+            sqlite_type="JSON",
+            postgres_type="JSON",
+        )
+
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
         raise
+
+
+def _ensure_column(
+    table: str,
+    column: str,
+    sqlite_type: str,
+    postgres_type: str,
+) -> None:
+    """
+    Add a column to `table` if it doesn't already exist.
+
+    SQLite: PRAGMA table_info to detect, then ALTER TABLE ADD COLUMN.
+    PostgreSQL: information_schema.columns to detect, then ALTER TABLE ADD COLUMN.
+
+    Both branches are no-ops if the column is already present, so this can run
+    on every startup without side effects.
+    """
+    try:
+        with engine.begin() as conn:
+            if IS_SQLITE:
+                rows = conn.execute(text(f"PRAGMA table_info({table})")).fetchall()
+                existing = {row[1] for row in rows}  # row[1] = column name
+                if column in existing:
+                    return
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sqlite_type}"))
+                logger.info(f"  + Added column {table}.{column} ({sqlite_type})")
+            else:
+                check = text(
+                    "SELECT 1 FROM information_schema.columns "
+                    "WHERE table_name = :t AND column_name = :c"
+                )
+                if conn.execute(check, {"t": table, "c": column}).fetchone():
+                    return
+                conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {postgres_type}"))
+                logger.info(f"  + Added column {table}.{column} ({postgres_type})")
+    except Exception as e:
+        # Don't crash startup on a migration that can't run — log and continue.
+        logger.warning(f"  Could not ensure column {table}.{column}: {e}")
 
 
 def drop_all_tables() -> None:

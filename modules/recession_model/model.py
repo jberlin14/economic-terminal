@@ -22,7 +22,12 @@ from loguru import logger
 from sklearn.preprocessing import StandardScaler
 
 from .backtest import run_walk_forward
-from .calibration import apply_calibrator, fit_calibrator
+from .calibration import (
+    apply_calibrator,
+    compute_operating_points,
+    select_calibrator_cv,
+    select_default_threshold,
+)
 from .data_builder import RecessionDataBuilder
 from .features import HORIZONS
 from .persistence import save_model, load_model
@@ -76,6 +81,12 @@ class RecessionModel:
         self.calibrators: Dict[int, Any] = {}
         self.calibration_method: Dict[int, str] = {}
         self.calibration_brier: Dict[int, Dict[str, float]] = {}
+        # operating_points[horizon] = list[{threshold, precision, recall, f1, ...}]
+        # computed against the calibrated walk-forward OOF probs (Phase 1 §1.3).
+        self.operating_points: Dict[int, List[Dict[str, Any]]] = {}
+        # default_threshold[horizon] = {threshold, precision, recall, f1, selection}
+        # the published decision threshold per horizon (precision-target rule).
+        self.default_threshold: Dict[int, Dict[str, Any]] = {}
         self.training_metadata: Dict[str, Any] = {}
         self._loaded = False
 
@@ -226,8 +237,10 @@ class RecessionModel:
             )
 
         # Fit per-horizon calibrators on the OOF probs from the walk-forward
-        # backtest. Picks Platt vs isotonic by Brier on the same OOF set.
-        logger.info("Fitting per-horizon ensemble calibrators (Platt vs isotonic by Brier)...")
+        # backtest. Uses time-ordered CV to pick Platt vs isotonic by mean
+        # held-out Brier — removes the in-sample optimism bias of fitting
+        # and scoring on the same OOF set (Phase 1 §1.1).
+        logger.info("Fitting per-horizon ensemble calibrators (Platt vs isotonic by held-out CV Brier)...")
         for horizon in HORIZONS:
             oof = self.oof_probs.get(horizon)
             if oof is None:
@@ -236,14 +249,54 @@ class RecessionModel:
                 continue
             target_col = f"recession_{horizon}m"
             y_h = df[target_col].values.astype(int)
-            calibrator, method, brier_comparison = fit_calibrator(oof, y_h)
+            calibrator, method, brier_comparison = select_calibrator_cv(oof, y_h)
             self.calibrators[horizon] = calibrator
             self.calibration_method[horizon] = method
             self.calibration_brier[horizon] = brier_comparison
+            cv_winner = brier_comparison.get(f"{method}_cv_mean")
             logger.success(
-                f"  Calibrator {horizon}m: method={method}, "
-                f"brier raw={brier_comparison['raw']} -> "
-                f"calibrated={brier_comparison.get(method, 'n/a')}"
+                f"  Calibrator {horizon}m: method={method} via {brier_comparison.get('selection')}, "
+                f"brier raw={brier_comparison['raw']}, "
+                f"in-sample={brier_comparison.get(f'{method}_in_sample', 'n/a')}, "
+                f"cv-mean={cv_winner if cv_winner is not None else 'n/a'} "
+                f"({brier_comparison.get('n_cv_folds', 0)} folds)"
+            )
+
+        # Compute ensemble operating points + default threshold against the
+        # CALIBRATED walk-forward OOF probabilities (Phase 1 §1.3). The
+        # default threshold replaces hard-coded 25/50% banding in predictor.
+        logger.info("Computing ensemble operating points + default thresholds per horizon...")
+        for horizon in HORIZONS:
+            oof = self.oof_probs.get(horizon)
+            if oof is None:
+                self.operating_points[horizon] = []
+                self.default_threshold[horizon] = {
+                    "threshold": 0.5, "precision": None, "recall": None,
+                    "f1": None, "selection": "default_fallback",
+                }
+                continue
+            target_col = f"recession_{horizon}m"
+            y_h = df[target_col].values.astype(int)
+
+            calibrator = self.calibrators.get(horizon)
+            if calibrator is not None:
+                # Apply the calibrator only to non-NaN entries; keep NaN
+                # in the same positions so compute_operating_points filters.
+                calibrated_oof = np.full_like(oof, np.nan, dtype=float)
+                mask = ~np.isnan(oof)
+                if mask.any():
+                    calibrated_oof[mask] = apply_calibrator(calibrator, oof[mask])
+            else:
+                calibrated_oof = oof
+
+            ops = compute_operating_points(calibrated_oof, y_h)
+            self.operating_points[horizon] = ops
+            self.default_threshold[horizon] = select_default_threshold(ops)
+            sel = self.default_threshold[horizon]
+            logger.success(
+                f"  Operating points {horizon}m: default threshold={sel['threshold']} "
+                f"(P={sel['precision']}, R={sel['recall']}, F1={sel['f1']}, "
+                f"selection={sel['selection']}, {len(ops)} operating points)"
             )
 
         self.training_metadata = {
@@ -454,6 +507,14 @@ class RecessionModel:
             },
             "walk_forward_metrics": {
                 f"{h}m": self.walk_forward_metrics.get(h, {})
+                for h in HORIZONS
+            },
+            "operating_points": {
+                f"{h}m": self.operating_points.get(h, [])
+                for h in HORIZONS
+            },
+            "default_threshold": {
+                f"{h}m": self.default_threshold.get(h, {})
                 for h in HORIZONS
             },
             "model_types": MODEL_TYPES,

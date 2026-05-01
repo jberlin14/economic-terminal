@@ -59,6 +59,29 @@ interface ModelInfo {
     platt?: number;
     isotonic?: number;
     identity?: number;
+    platt_in_sample?: number;
+    isotonic_in_sample?: number;
+    platt_cv_mean?: number | null;
+    isotonic_cv_mean?: number | null;
+    platt_cv_std?: number | null;
+    isotonic_cv_std?: number | null;
+    n_cv_folds?: number;
+    selection?: string;
+  }>;
+  operating_points?: Record<string, Array<{
+    threshold: number;
+    precision: number;
+    recall: number;
+    f1: number;
+    n_positive_predictions: number;
+    support_positives: number;
+  }>>;
+  default_threshold?: Record<string, {
+    threshold: number;
+    precision: number | null;
+    recall: number | null;
+    f1: number | null;
+    selection: string;
   }>;
   horizons?: string[];
 }
@@ -71,9 +94,18 @@ type WalkForwardAggregate = {
 interface ProbabilityData {
   trained: boolean;
   probabilities?: Record<string, number>;
+  raw_probabilities?: Record<string, number>;
   model_probabilities?: Record<string, Record<string, number>>;
   signal?: string;
   signal_label?: string;
+  decision_threshold_6m?: {
+    threshold_pct: number;
+    moderate_floor_pct: number;
+    selection: string | null;
+    precision: number | null;
+    recall: number | null;
+    f1: number | null;
+  };
   feature_snapshot?: Record<string, number>;
   message?: string;
   error?: string;
@@ -124,6 +156,23 @@ const GaugeChart: React.FC<{ score: number; color: string; size?: number; label?
 };
 
 const probColor = (pct: number): string => pct >= 50 ? 'red' : pct >= 25 ? 'yellow' : 'green';
+
+// Horizon-aware banding using the calibrated default threshold from the
+// operating-point table (Phase 1 §1.3). Falls back to 25/50% when the model
+// hasn't published a default (legacy / pre-Phase-1 artifacts).
+const probBand = (
+  pct: number,
+  defaultThreshold?: { threshold: number; selection: string },
+): { color: string; label: string } => {
+  if (!defaultThreshold || defaultThreshold.threshold == null) {
+    return { color: probColor(pct), label: pct >= 50 ? 'Elevated' : pct >= 25 ? 'Moderate' : 'Low' };
+  }
+  const elevatedPct = defaultThreshold.threshold * 100;
+  const moderatePct = Math.max(15, elevatedPct * 0.5);
+  if (pct >= elevatedPct) return { color: 'red', label: 'Elevated' };
+  if (pct >= moderatePct) return { color: 'yellow', label: 'Moderate' };
+  return { color: 'green', label: 'Low' };
+};
 
 // ──────────────────────────────────────────────
 // Main Component
@@ -323,13 +372,19 @@ export const RecessionModel: React.FC = () => {
             { key: '12m', label: '12-Month' },
           ].map(({ key, label }) => {
             const pct = probs[key] ?? 0;
-            const c = probColor(pct);
+            const dt = modelInfo?.default_threshold?.[key];
+            const band = probBand(pct, dt);
             return (
               <div key={key} className="flex flex-col items-center">
-                <GaugeChart score={pct} color={c} size={160} label={`${label} Horizon`} />
-                <span className={`text-xs font-mono font-bold mt-1 ${c === 'green' ? 'text-positive' : c === 'yellow' ? 'text-warning' : 'text-critical'}`}>
-                  {pct >= 50 ? 'Elevated' : pct >= 25 ? 'Moderate' : 'Low'} Risk
+                <GaugeChart score={pct} color={band.color} size={160} label={`${label} Horizon`} />
+                <span className={`text-xs font-mono font-bold mt-1 ${band.color === 'green' ? 'text-positive' : band.color === 'yellow' ? 'text-warning' : 'text-critical'}`}>
+                  {band.label} Risk
                 </span>
+                {dt && dt.threshold != null && (
+                  <span className="text-[9px] text-terminal-text-dim mt-0.5 font-mono">
+                    Elevated &ge; {(dt.threshold * 100).toFixed(0)}%
+                  </span>
+                )}
               </div>
             );
           })}
@@ -426,6 +481,12 @@ export const RecessionModel: React.FC = () => {
       <CalibrationPanel
         method={modelInfo?.calibration_method}
         comparison={modelInfo?.calibration_brier_comparison}
+      />
+
+      {/* Operating Points Panel (Phase 1 §1.3) */}
+      <OperatingPointsPanel
+        operatingPoints={modelInfo?.operating_points}
+        defaultThreshold={modelInfo?.default_threshold}
       />
 
       {/* Historical Chart */}
@@ -862,50 +923,204 @@ const WalkForwardBox: React.FC<{
 
 const CalibrationPanel: React.FC<{
   method?: Record<string, string | null>;
-  comparison?: Record<string, { raw?: number; platt?: number; isotonic?: number; identity?: number }>;
+  comparison?: ModelInfo['calibration_brier_comparison'];
 }> = ({ method, comparison }) => {
   const horizons = ['3m', '6m', '12m'];
   const hasAny = method && horizons.some(h => method[h]);
+  const hasCv = comparison && horizons.some(h => (comparison[h]?.n_cv_folds ?? 0) > 0);
 
   return (
     <div className="bg-terminal-panel border border-terminal-border rounded-lg p-4 mb-4">
       <span className="text-[10px] text-terminal-text-dim font-mono uppercase tracking-wider mb-3 block">
         Probability Calibration
       </span>
-      <div className="space-y-1.5">
-        {horizons.map(h => {
-          const m = method?.[h] ?? null;
-          const c = comparison?.[h] ?? {};
-          if (!m) {
-            return (
-              <div key={h} className="flex items-center justify-between text-xs">
-                <span className="text-terminal-text-dim font-mono">{h.replace('m', '-mo')}</span>
-                <span className="text-terminal-text-dim italic">not calibrated (legacy model)</span>
-              </div>
-            );
-          }
-          const raw = c.raw;
-          const calibrated =
-            m === 'platt' ? c.platt :
-            m === 'isotonic' ? c.isotonic :
-            c.identity;
-          return (
-            <div key={h} className="flex items-center justify-between text-xs">
-              <span className="text-terminal-text-dim font-mono">{h.replace('m', '-mo')}</span>
-              <span className="text-terminal-text font-mono">
-                <span className="text-terminal-text-dim">{m} &middot; Brier </span>
-                {raw !== undefined ? raw.toFixed(4) : '—'}
-                <span className="text-terminal-text-dim"> &rarr; </span>
-                {calibrated !== undefined ? calibrated.toFixed(4) : '—'}
-              </span>
-            </div>
-          );
-        })}
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs font-mono">
+          <thead>
+            <tr className="text-terminal-text-dim border-b border-terminal-border/50">
+              <th className="text-left py-1 pr-3">Horizon</th>
+              <th className="text-left py-1 pr-3">Method</th>
+              <th className="text-right py-1 px-2">Raw Brier</th>
+              <th className="text-right py-1 px-2">In-Sample</th>
+              <th className="text-right py-1 px-2">CV Mean &plusmn; Std</th>
+              <th className="text-right py-1 pl-2">Folds</th>
+            </tr>
+          </thead>
+          <tbody>
+            {horizons.map(h => {
+              const m = method?.[h] ?? null;
+              const c = comparison?.[h] ?? {};
+              if (!m) {
+                return (
+                  <tr key={h} className="border-t border-terminal-border/30">
+                    <td className="py-1.5 pr-3 text-terminal-text-dim">{h.replace('m', '-mo')}</td>
+                    <td className="py-1.5 pr-3 text-terminal-text-dim italic" colSpan={5}>
+                      not calibrated (legacy model)
+                    </td>
+                  </tr>
+                );
+              }
+              const inSample =
+                m === 'platt' ? c.platt_in_sample :
+                m === 'isotonic' ? c.isotonic_in_sample :
+                c.identity;
+              const cvMean =
+                m === 'platt' ? c.platt_cv_mean :
+                m === 'isotonic' ? c.isotonic_cv_mean :
+                null;
+              const cvStd =
+                m === 'platt' ? c.platt_cv_std :
+                m === 'isotonic' ? c.isotonic_cv_std :
+                null;
+              const folds = c.n_cv_folds ?? 0;
+              return (
+                <tr key={h} className="border-t border-terminal-border/30">
+                  <td className="py-1.5 pr-3 text-terminal-text">{h.replace('m', '-mo')}</td>
+                  <td className="py-1.5 pr-3 text-terminal-text-dim">{m}</td>
+                  <td className="py-1.5 px-2 text-right text-terminal-text">
+                    {c.raw !== undefined && c.raw !== null ? c.raw.toFixed(4) : '—'}
+                  </td>
+                  <td className="py-1.5 px-2 text-right text-terminal-text-dim">
+                    {inSample != null ? inSample.toFixed(4) : '—'}
+                  </td>
+                  <td className="py-1.5 px-2 text-right text-terminal-text">
+                    {cvMean != null
+                      ? `${cvMean.toFixed(4)}${cvStd != null ? ` ± ${cvStd.toFixed(4)}` : ''}`
+                      : '—'}
+                  </td>
+                  <td className="py-1.5 pl-2 text-right text-terminal-text-dim">{folds || '—'}</td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
       </div>
       <p className="text-[10px] text-terminal-text-dim mt-3">
         {hasAny
-          ? 'Calibrators are fit on out-of-fold predictions from the walk-forward backtest. Lower Brier = better-calibrated probabilities.'
+          ? hasCv
+            ? 'Method picked by mean held-out Brier across time-ordered K-fold splits of the walk-forward OOF set, then refit on the full set. CV mean is the unbiased estimate; in-sample shown for reference.'
+            : 'Method picked by in-sample Brier on the walk-forward OOF set (CV not available — too few samples or one-class folds).'
           : 'Calibration metadata is missing on this model. Retrain to compute Platt/isotonic calibrators.'}
+      </p>
+    </div>
+  );
+};
+
+// ──────────────────────────────────────────────
+// Operating Points Panel (Phase 1 §1.3)
+// ──────────────────────────────────────────────
+
+const OperatingPointsPanel: React.FC<{
+  operatingPoints?: ModelInfo['operating_points'];
+  defaultThreshold?: ModelInfo['default_threshold'];
+}> = ({ operatingPoints, defaultThreshold }) => {
+  const horizons = ['3m', '6m', '12m'];
+  const [activeHorizon, setActiveHorizon] = useState<string>('6m');
+
+  const ops = operatingPoints?.[activeHorizon] || [];
+  const dt = defaultThreshold?.[activeHorizon];
+  const hasAny = horizons.some(h => (operatingPoints?.[h]?.length ?? 0) > 0);
+
+  if (!hasAny) {
+    return (
+      <div className="bg-terminal-panel border border-terminal-border rounded-lg p-4 mb-4">
+        <span className="text-[10px] text-terminal-text-dim font-mono uppercase tracking-wider mb-3 block">
+          Operating Points
+        </span>
+        <p className="text-[10px] text-terminal-text-dim italic">
+          Operating-point metadata is missing on this model. Retrain to compute precision/recall tables and a horizon-level decision threshold.
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-terminal-panel border border-terminal-border rounded-lg p-4 mb-4">
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-[10px] text-terminal-text-dim font-mono uppercase tracking-wider">
+          Operating Points (Calibrated OOF)
+        </span>
+        <div className="flex gap-1">
+          {horizons.map(h => (
+            <button
+              key={h}
+              onClick={() => setActiveHorizon(h)}
+              className={`px-2.5 py-1 rounded text-[10px] font-mono transition-colors ${
+                activeHorizon === h
+                  ? 'bg-purple-500/20 text-purple-400 border border-purple-500/30'
+                  : 'text-terminal-text-dim hover:bg-terminal-surface border border-transparent'
+              }`}
+            >
+              {h.replace('m', '-mo')}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {dt && dt.threshold != null && (
+        <div className="text-[11px] mb-3 px-3 py-2 rounded bg-terminal-surface border border-terminal-border/50">
+          <span className="text-terminal-text-dim font-mono">Default decision threshold: </span>
+          <span className="text-terminal-text font-mono font-bold">
+            {(dt.threshold * 100).toFixed(0)}%
+          </span>
+          <span className="text-terminal-text-dim font-mono">
+            {' '}&middot; selected by{' '}
+          </span>
+          <span className="text-terminal-text font-mono">
+            {dt.selection === 'precision_target'
+              ? 'precision ≥ 60% with max recall'
+              : dt.selection === 'max_f1'
+                ? 'max-F1 fallback (no threshold met precision target)'
+                : dt.selection}
+          </span>
+          {dt.precision != null && dt.recall != null && dt.f1 != null && (
+            <span className="text-terminal-text-dim font-mono">
+              {' '}&middot; P={(dt.precision * 100).toFixed(0)}% R={(dt.recall * 100).toFixed(0)}% F1={dt.f1.toFixed(2)}
+            </span>
+          )}
+        </div>
+      )}
+
+      <div className="overflow-x-auto">
+        <table className="w-full text-xs font-mono">
+          <thead>
+            <tr className="text-terminal-text-dim border-b border-terminal-border/50">
+              <th className="text-left py-1 pr-3">Threshold</th>
+              <th className="text-right py-1 px-2">Precision</th>
+              <th className="text-right py-1 px-2">Recall</th>
+              <th className="text-right py-1 px-2">F1</th>
+              <th className="text-right py-1 pl-2">Pos. Predicted</th>
+            </tr>
+          </thead>
+          <tbody>
+            {ops.map(op => {
+              const isDefault = dt && Math.abs(op.threshold - dt.threshold) < 1e-6;
+              return (
+                <tr
+                  key={op.threshold}
+                  className={`border-t border-terminal-border/30 ${
+                    isDefault ? 'bg-purple-500/5' : ''
+                  }`}
+                >
+                  <td className={`py-1.5 pr-3 ${isDefault ? 'text-purple-400 font-bold' : 'text-terminal-text'}`}>
+                    {(op.threshold * 100).toFixed(0)}%
+                    {isDefault && <span className="text-[9px] ml-1 text-purple-400">&larr; default</span>}
+                  </td>
+                  <td className="py-1.5 px-2 text-right text-terminal-text">{(op.precision * 100).toFixed(0)}%</td>
+                  <td className="py-1.5 px-2 text-right text-terminal-text">{(op.recall * 100).toFixed(0)}%</td>
+                  <td className="py-1.5 px-2 text-right text-terminal-text">{op.f1.toFixed(2)}</td>
+                  <td className="py-1.5 pl-2 text-right text-terminal-text-dim">
+                    {op.n_positive_predictions} / {op.support_positives}
+                  </td>
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      </div>
+
+      <p className="text-[10px] text-terminal-text-dim mt-3">
+        Precision/recall computed on calibrated walk-forward OOF predictions. The default threshold is published as the gauge banding cutoff (Elevated &ge; default, Moderate &ge; half-default, otherwise Low). "Pos. Predicted" is the number of months flagged at that threshold; "support" is the actual recession-positive months in the OOF window.
       </p>
     </div>
   );

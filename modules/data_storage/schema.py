@@ -562,6 +562,13 @@ class AIMarketJournal(Base):
     # News themes snapshot
     news_themes = Column(JSON)  # {top_categories: {...}, top_leaders: [...], severity_counts: {...}}
 
+    # Per-pillar scorecard scores at time of entry (Phase 1 §1.4).
+    # Structure: {composite, composite_color, composite_trend, pillars: {<id>: {score, color, components, ...}}}
+    # The scorecard sparkline reads these directly so historical values match
+    # live multi-component scoring (the old reconstruction used a simplified
+    # single-component formula and drifted from the live pillar value).
+    pillar_scores_snapshot = Column(JSON)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -574,4 +581,5 @@ class AIMarketJournal(Base):
             'narrative_summary': self.narrative_summary,
             'indicator_snapshot': self.indicator_snapshot or {},
             'news_themes': self.news_themes or {},
+            'pillar_scores_snapshot': self.pillar_scores_snapshot or {},
         }

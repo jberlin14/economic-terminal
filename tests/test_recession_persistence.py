@@ -43,6 +43,16 @@ def test_save_load_round_trip(tmp_path, monkeypatch):
         m.ensemble_weights[h] = {mt: 0.25 for mt in MODEL_TYPES}
         m.best_model[h] = "logistic"
         m.decision_tree_rules[h] = []
+        m.operating_points[h] = [
+            {"threshold": 0.30, "precision": 0.4, "recall": 0.8, "f1": 0.53,
+             "n_positive_predictions": 40, "support_positives": 25},
+            {"threshold": 0.50, "precision": 0.7, "recall": 0.5, "f1": 0.58,
+             "n_positive_predictions": 18, "support_positives": 25},
+        ]
+        m.default_threshold[h] = {
+            "threshold": 0.50, "precision": 0.7, "recall": 0.5,
+            "f1": 0.58, "selection": "precision_target",
+        }
     m.training_metadata = {"trained_at": "2026-04-26T00:00:00", "n_samples": 100}
     m._loaded = True
 
@@ -57,6 +67,8 @@ def test_save_load_round_trip(tmp_path, monkeypatch):
     assert m2.metrics == m.metrics
     assert m2.ensemble_weights == m.ensemble_weights
     assert m2.optimal_thresholds == m.optimal_thresholds
+    assert m2.operating_points == m.operating_points
+    assert m2.default_threshold == m.default_threshold
 
     # Predict produces same output on the same input
     features = {f"f{i}": float(X[0, i]) for i in range(n_features)}

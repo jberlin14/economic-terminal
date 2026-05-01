@@ -77,10 +77,20 @@ class RecessionPredictor:
 
         probabilities = self.model.predict(features)
 
-        prob_6m = probabilities.get("ensemble", {}).get("6m", 0)
-        if prob_6m >= 50:
+        prob_6m_pct = probabilities.get("ensemble", {}).get("6m", 0)
+
+        # Default threshold for the 6m horizon comes from the calibrated
+        # OOF operating-point table (Phase 1 §1.3). The published threshold
+        # is in [0,1]; ensemble probabilities are in percent — multiply by 100.
+        default_threshold_info = (getattr(self.model, "default_threshold", {}) or {}).get(6, {})
+        default_threshold_pct = float(default_threshold_info.get("threshold", 0.5)) * 100
+        # "Moderate" band straddles the default threshold by half its distance
+        # to zero, with a hard floor at 15% so we don't dilute the "low" band.
+        moderate_floor_pct = max(15.0, default_threshold_pct * 0.5)
+
+        if prob_6m_pct >= default_threshold_pct:
             signal, signal_label = "high", "Elevated"
-        elif prob_6m >= 25:
+        elif prob_6m_pct >= moderate_floor_pct:
             signal, signal_label = "moderate", "Moderate"
         else:
             signal, signal_label = "low", "Low"
@@ -95,6 +105,14 @@ class RecessionPredictor:
             "model_probabilities": probabilities.get("models", {}),
             "signal": signal,
             "signal_label": signal_label,
+            "decision_threshold_6m": {
+                "threshold_pct": round(default_threshold_pct, 1),
+                "moderate_floor_pct": round(moderate_floor_pct, 1),
+                "selection": default_threshold_info.get("selection"),
+                "precision": default_threshold_info.get("precision"),
+                "recall": default_threshold_info.get("recall"),
+                "f1": default_threshold_info.get("f1"),
+            },
             "feature_snapshot": {
                 k: round(v, 4) if isinstance(v, float) else v
                 for k, v in features.items()

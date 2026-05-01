@@ -104,6 +104,12 @@ def save_model(model: "RecessionModel") -> None:
         "calibration_brier_comparison": {
             str(h): brier for h, brier in (model.calibration_brier or {}).items()
         },
+        "operating_points": {
+            str(h): ops for h, ops in (getattr(model, "operating_points", {}) or {}).items()
+        },
+        "default_threshold": {
+            str(h): sel for h, sel in (getattr(model, "default_threshold", {}) or {}).items()
+        },
     }
     with open(MODEL_DIR / "metadata.json", "w") as f:
         json.dump(meta, f, indent=2)
@@ -188,6 +194,15 @@ def load_model(model: "RecessionModel") -> bool:
         model.calibration_brier = {
             int(k): v for k, v in (meta.get("calibration_brier_comparison", {}) or {}).items()
         }
+        # Operating points + default threshold (Phase 1 §1.3). Backwards-compat:
+        # missing keys leave the dicts empty, predictor falls back to legacy
+        # 25/50% banding.
+        model.operating_points = {
+            int(k): v for k, v in (meta.get("operating_points", {}) or {}).items()
+        }
+        model.default_threshold = {
+            int(k): v for k, v in (meta.get("default_threshold", {}) or {}).items()
+        }
 
         # Determine which model types to load
         model_types = meta.get("model_types", list(MODEL_TYPES.keys()))
@@ -259,6 +274,8 @@ def _load_legacy(model: "RecessionModel") -> bool:
         model.calibrators = {h: None for h in HORIZONS}
         model.calibration_method = {}
         model.calibration_brier = {}
+        model.operating_points = {}
+        model.default_threshold = {}
         model._loaded = True
         logger.info("Loaded legacy single-model recession model")
         return True
