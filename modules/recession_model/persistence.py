@@ -110,6 +110,8 @@ def save_model(model: "RecessionModel") -> None:
         "default_threshold": {
             str(h): sel for h, sel in (getattr(model, "default_threshold", {}) or {}).items()
         },
+        # Training quantiles for live drift scoring (Phase 2 §2.5).
+        "training_quantiles": getattr(model, "training_quantiles", {}) or {},
     }
     with open(MODEL_DIR / "metadata.json", "w") as f:
         json.dump(meta, f, indent=2)
@@ -203,6 +205,7 @@ def load_model(model: "RecessionModel") -> bool:
         model.default_threshold = {
             int(k): v for k, v in (meta.get("default_threshold", {}) or {}).items()
         }
+        model.training_quantiles = meta.get("training_quantiles", {}) or {}
 
         # Determine which model types to load
         model_types = meta.get("model_types", list(MODEL_TYPES.keys()))
@@ -276,6 +279,7 @@ def _load_legacy(model: "RecessionModel") -> bool:
         model.calibration_brier = {}
         model.operating_points = {}
         model.default_threshold = {}
+        model.training_quantiles = {}
         model._loaded = True
         logger.info("Loaded legacy single-model recession model")
         return True

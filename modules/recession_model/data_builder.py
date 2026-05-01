@@ -63,11 +63,27 @@ class RecessionDataBuilder:
 
         feature_cols = get_feature_columns(df)
 
-        # Smart NaN handling: forward-fill then fill remaining with 0
-        # This preserves pre-1986 rows where Tier 3/4 series don't exist yet
+        # Era-aware NaN handling (Phase 2 §2.3). Forward-fill across small
+        # gaps; for the head-of-series NaNs (pre-1986 rows for Tier 3/4
+        # series like VIX, BAA spreads, JOLTS), fill with the column's
+        # median rather than zero. Median imputation is a more reasonable
+        # null-hypothesis value than "this credit spread was exactly zero
+        # before VIX existed" — the old fillna(0) silently injected
+        # extreme values into eras that never saw them.
+        # Cache the median imputation values so build_current_features
+        # uses the same constants for consistency.
+        median_fills: Dict[str, float] = {}
         for col in feature_cols:
             df[col] = df[col].ffill()
-            df[col] = df[col].fillna(0)
+            if df[col].isna().any():
+                med = df[col].median(skipna=True)
+                if pd.isna(med):
+                    med = 0.0  # column is entirely empty; sentinel to 0
+                median_fills[col] = float(med)
+                df[col] = df[col].fillna(med)
+            else:
+                median_fills[col] = 0.0
+        self._median_fills = median_fills
 
         target_cols = [f"recession_{h}m" for h in HORIZONS]
 
@@ -250,10 +266,18 @@ class RecessionDataBuilder:
         # Engineer features — exact same function as training
         df = engineer_features(df)
 
-        # Forward-fill then zero-fill, same as training
+        # Forward-fill then median-fill (Phase 2 §2.3). Live prediction
+        # operates on a 72-month window so most series have full coverage,
+        # but newer-vintage series (e.g. JOLTS prior to 2000) can still
+        # carry head-of-window NaNs. Use the column's window median rather
+        # than 0 to avoid injecting "credit spread = 0" type pseudo-data.
         for col in df.columns:
             df[col] = df[col].ffill()
-            df[col] = df[col].fillna(0)
+            if df[col].isna().any():
+                med = df[col].median(skipna=True)
+                if pd.isna(med):
+                    med = 0.0
+                df[col] = df[col].fillna(med)
 
         # Take the latest row
         if df.empty:

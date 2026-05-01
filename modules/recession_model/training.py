@@ -37,11 +37,20 @@ MODEL_TYPES = {
 def create_model(model_type: str):
     """Create a fresh model instance by type."""
     if model_type == "logistic":
+        # L1-penalized logistic with light regularization (Phase 2 §2.2).
+        # On 199 features over ~800 samples the legacy L2 fit produced
+        # diffuse coefficients that didn't generalize. L1 zeroes irrelevant
+        # features, leaving a sparse coefficient list that the UI can
+        # surface honestly. liblinear is the only sklearn solver that
+        # supports L1 + binary classification reliably.
         return LogisticRegression(
-            C=1.0, max_iter=1000, class_weight="balanced",
-            solver="lbfgs", random_state=42,
+            penalty="l1", C=0.1, max_iter=2000, class_weight="balanced",
+            solver="liblinear", random_state=42,
         )
     elif model_type == "knn":
+        # KNN doesn't accept class_weight. We compensate at fit time via
+        # `train_single_model`, which under-samples the majority class to
+        # match positive recession-month support (Phase 2 §2.1).
         return KNeighborsClassifier(n_neighbors=5, weights="distance")
     elif model_type == "random_forest":
         return RandomForestClassifier(
@@ -49,12 +58,58 @@ def create_model(model_type: str):
             class_weight="balanced", random_state=42, n_jobs=-1,
         )
     elif model_type == "gradient_boosting":
+        # GradientBoostingClassifier accepts sample_weight at fit time.
+        # `train_single_model` passes inverse-class-frequency weights
+        # (Phase 2 §2.1) — recessions are 14-24% of months and were
+        # previously under-called by the unweighted GB head.
         return GradientBoostingClassifier(
             n_estimators=200, max_depth=4, learning_rate=0.05,
             min_samples_leaf=10, subsample=0.8, random_state=42,
         )
     else:
         raise ValueError(f"Unknown model type: {model_type}")
+
+
+def _balanced_sample_weights(y: np.ndarray) -> np.ndarray:
+    """
+    Return per-sample weights inversely proportional to class frequency,
+    normalized so the mean weight is 1. Mirrors sklearn's class_weight='balanced'
+    formula (n_samples / (n_classes * class_count)) but as an explicit array
+    for estimators that don't expose `class_weight` (e.g. GradientBoosting).
+    """
+    classes, counts = np.unique(y, return_counts=True)
+    n_samples = len(y)
+    n_classes = len(classes)
+    if n_classes < 2:
+        return np.ones_like(y, dtype=float)
+    class_weight = {c: n_samples / (n_classes * cnt) for c, cnt in zip(classes, counts)}
+    return np.array([class_weight[v] for v in y], dtype=float)
+
+
+def _undersample_majority(
+    X: np.ndarray, y: np.ndarray, random_state: int = 42
+) -> Tuple[np.ndarray, np.ndarray]:
+    """
+    Randomly under-sample the majority class to match minority support.
+    Used for KNN, which has no class-weight or sample-weight knob.
+
+    Order is preserved within each class so callers that care about time
+    ordering can re-sort by index if needed (the KNN fit is order-invariant).
+    """
+    classes, counts = np.unique(y, return_counts=True)
+    if len(classes) < 2:
+        return X, y
+    minority_class = classes[np.argmin(counts)]
+    majority_class = classes[np.argmax(counts)]
+    n_minority = int(min(counts))
+
+    rng = np.random.RandomState(random_state)
+    minority_idx = np.where(y == minority_class)[0]
+    majority_idx = np.where(y == majority_class)[0]
+    if len(majority_idx) > n_minority:
+        majority_idx = rng.choice(majority_idx, size=n_minority, replace=False)
+    keep = np.sort(np.concatenate([minority_idx, majority_idx]))
+    return X[keep], y[keep]
 
 
 def find_optimal_threshold(y_true: np.ndarray, y_prob: np.ndarray) -> float:
@@ -88,7 +143,17 @@ def train_single_model(
     if len(np.unique(y_train)) < 2:
         raise ValueError("Training set has only one class")
 
-    model.fit(X_train, y_train)
+    # Class imbalance handling for the two estimators that don't expose
+    # `class_weight` (Phase 2 §2.1):
+    #   - KNN: under-sample the majority class to match minority support.
+    #   - GradientBoosting: pass balanced sample_weight at fit time.
+    if model_type == "knn":
+        X_fit, y_fit = _undersample_majority(X_train, y_train)
+        model.fit(X_fit, y_fit)
+    elif model_type == "gradient_boosting":
+        model.fit(X_train, y_train, sample_weight=_balanced_sample_weights(y_train))
+    else:
+        model.fit(X_train, y_train)
 
     # Get probabilities
     if hasattr(model, "predict_proba"):

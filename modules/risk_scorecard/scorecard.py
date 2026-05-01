@@ -21,6 +21,17 @@ from loguru import logger
 from modules.utils.timezone import get_current_time
 
 
+# Module-level cache for live yfinance pulls (Phase 2 §2.7).
+# yfinance hits VIX/oil/gold every scorecard request — at ~3 page loads
+# per minute that's 540 outbound requests/hour. A 5-minute TTL cache
+# brings that to 36/hour without staleness issues for daily-grained pillars.
+_LIVE_DATA_TTL_SECONDS = 300
+_live_data_cache: Dict[str, Any] = {
+    "data": None,
+    "timestamp": 0.0,
+}
+
+
 # ──────────────────────────────────────────────
 # Pillar Weights
 # ──────────────────────────────────────────────
@@ -628,8 +639,20 @@ class RiskScorecard:
     # ──────────────────────────────────────────
 
     def _fetch_live_data(self) -> Dict[str, Any]:
-        """Fetch live VIX, oil, gold data via yfinance."""
-        result = {}
+        """Fetch live VIX, oil, gold data via yfinance (Phase 2 §2.7 cached).
+
+        Uses a module-level 5-minute TTL cache so concurrent scorecard
+        requests don't hammer Yahoo. The cache is process-local and
+        cleared on restart, which is fine — a 5-minute staleness on
+        VIX is invisible at the daily-grained scorecard.
+        """
+        now = time.time()
+        cached = _live_data_cache.get("data")
+        cached_at = _live_data_cache.get("timestamp", 0.0)
+        if cached is not None and (now - cached_at) < _LIVE_DATA_TTL_SECONDS:
+            return cached
+
+        result: Dict[str, Any] = {}
         try:
             import yfinance as yf
             import pandas as pd
@@ -657,6 +680,10 @@ class RiskScorecard:
         except ImportError:
             logger.warning("yfinance not available for live data")
 
+        # Only cache when we got real data; otherwise let the next request retry.
+        if result:
+            _live_data_cache["data"] = result
+            _live_data_cache["timestamp"] = now
         return result
 
     def _get_historical_sparklines(self, days: int = 14) -> List[Dict]:

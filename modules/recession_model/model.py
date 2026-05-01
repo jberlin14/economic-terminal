@@ -29,6 +29,7 @@ from .calibration import (
     select_default_threshold,
 )
 from .data_builder import RecessionDataBuilder
+from .drift import compute_training_quantiles
 from .features import HORIZONS
 from .persistence import save_model, load_model
 from .training import (
@@ -38,6 +39,8 @@ from .training import (
     train_single_model,
     find_optimal_threshold,
     extract_tree_rules,
+    _balanced_sample_weights,
+    _undersample_majority,
 )
 
 
@@ -87,6 +90,10 @@ class RecessionModel:
         # default_threshold[horizon] = {threshold, precision, recall, f1, selection}
         # the published decision threshold per horizon (precision-target rule).
         self.default_threshold: Dict[int, Dict[str, Any]] = {}
+        # Per-feature training-window quantiles for live drift scoring
+        # (Phase 2 §2.5). Populated at train() time, surfaced via
+        # `predictor.get_current_probability` as a soft warning chip.
+        self.training_quantiles: Dict[str, Dict[str, float]] = {}
         self.training_metadata: Dict[str, Any] = {}
         self._loaded = False
 
@@ -200,7 +207,17 @@ class RecessionModel:
                 if model_type in self.models[horizon]:
                     try:
                         full_model = create_model(model_type)
-                        full_model.fit(X_full, y)
+                        # Mirror the per-model imbalance handling used during
+                        # the held-out fit (Phase 2 §2.1): KNN gets majority
+                        # under-sampling; GB gets balanced sample weights;
+                        # logistic + RF rely on class_weight='balanced'.
+                        if model_type == "knn":
+                            X_fit, y_fit = _undersample_majority(X_full, y)
+                            full_model.fit(X_fit, y_fit)
+                        elif model_type == "gradient_boosting":
+                            full_model.fit(X_full, y, sample_weight=_balanced_sample_weights(y))
+                        else:
+                            full_model.fit(X_full, y)
                         self.models[horizon][model_type] = full_model
                     except Exception as e:
                         logger.warning(f"Failed to refit {model_type} on full data: {e}")
@@ -299,6 +316,16 @@ class RecessionModel:
                 f"selection={sel['selection']}, {len(ops)} operating points)"
             )
 
+        # Persist per-feature training quantiles for live drift scoring
+        # (Phase 2 §2.5). Computed once here so predictor.get_current_probability
+        # can compare the live snapshot against this baseline cheaply.
+        try:
+            self.training_quantiles = compute_training_quantiles(df, self.feature_names)
+            logger.info(f"Computed training quantiles for {len(self.training_quantiles)} features")
+        except Exception as e:
+            logger.warning(f"Failed to compute training quantiles: {e}")
+            self.training_quantiles = {}
+
         self.training_metadata = {
             "trained_at": datetime.utcnow().isoformat(),
             "data_start": data_meta["start_date"],
@@ -391,6 +418,33 @@ class RecessionModel:
                 raw_ensemble[f"{horizon}m"] = 0.0
                 calibrated_ensemble[f"{horizon}m"] = 0.0
 
+        # Phase 2 §2.4: probability uncertainty bands.
+        # We use the spread of per-model probabilities at predict time as a
+        # cheap, honest proxy for ensemble uncertainty. This isn't a true
+        # bootstrap CI (would require keeping fold-models or running a
+        # bootstrap at fit time), but it's a reasonable signal: when the
+        # 4 model heads disagree, the band is wide; when they agree, narrow.
+        uncertainty_bands: Dict[str, Dict[str, float]] = {}
+        for horizon in HORIZONS:
+            per_model_for_horizon = [
+                model_probs[mt][f"{horizon}m"]
+                for mt in MODEL_TYPES
+                if mt in model_probs and f"{horizon}m" in model_probs[mt]
+            ]
+            if len(per_model_for_horizon) >= 2:
+                arr = np.array(per_model_for_horizon, dtype=float)
+                uncertainty_bands[f"{horizon}m"] = {
+                    "p25": round(float(np.percentile(arr, 25)), 1),
+                    "p50": round(float(np.percentile(arr, 50)), 1),
+                    "p75": round(float(np.percentile(arr, 75)), 1),
+                    "min": round(float(arr.min()), 1),
+                    "max": round(float(arr.max()), 1),
+                    "iqr": round(float(np.percentile(arr, 75) - np.percentile(arr, 25)), 1),
+                    "n_models": len(per_model_for_horizon),
+                }
+            else:
+                uncertainty_bands[f"{horizon}m"] = {}
+
         return {
             # `ensemble` aliases the calibrated value — callers that read
             # `result["ensemble"][<horizon>]` get the canonical probability.
@@ -398,6 +452,7 @@ class RecessionModel:
             "raw_ensemble": raw_ensemble,
             "calibrated_ensemble": calibrated_ensemble,
             "models": model_probs,
+            "uncertainty": uncertainty_bands,
         }
 
     def predict_history(self, df: pd.DataFrame) -> pd.DataFrame:

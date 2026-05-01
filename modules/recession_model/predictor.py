@@ -19,6 +19,7 @@ from sqlalchemy.orm import Session
 
 from .model import RecessionModel
 from .data_builder import RecessionDataBuilder
+from .drift import compute_feature_drift
 
 # Module-level cache for live features (avoids re-fetching from FRED on every page load)
 _feature_cache: Dict[str, Any] = {
@@ -77,6 +78,17 @@ class RecessionPredictor:
 
         probabilities = self.model.predict(features)
 
+        # Phase 2 §2.5: feature drift score against training-window quantiles.
+        # Restrict to the top-20 features by importance to keep the report
+        # manageable; fall back to all features if importance metadata is
+        # missing.
+        top_features = self._top_features_by_importance(limit=20)
+        drift = compute_feature_drift(
+            features,
+            getattr(self.model, "training_quantiles", {}) or {},
+            top_features=top_features,
+        )
+
         prob_6m_pct = probabilities.get("ensemble", {}).get("6m", 0)
 
         # Default threshold for the 6m horizon comes from the calibrated
@@ -103,6 +115,7 @@ class RecessionPredictor:
             "probabilities": probabilities.get("ensemble", {}),
             "raw_probabilities": probabilities.get("raw_ensemble", {}),
             "model_probabilities": probabilities.get("models", {}),
+            "uncertainty": probabilities.get("uncertainty", {}),
             "signal": signal,
             "signal_label": signal_label,
             "decision_threshold_6m": {
@@ -117,8 +130,23 @@ class RecessionPredictor:
                 k: round(v, 4) if isinstance(v, float) else v
                 for k, v in features.items()
             },
+            "drift": drift,
             "model_info": self.model.get_model_info(),
         }
+
+    def _top_features_by_importance(self, limit: int = 20) -> list:
+        """Pull the top-K feature names from the random-forest importance
+        list at the 6m horizon (the canonical horizon for the page banner).
+        Falls back to logistic coefficients, then to all features."""
+        metrics_6m = (self.model.metrics or {}).get(6, {})
+        for mt in ("random_forest", "gradient_boosting", "logistic"):
+            entry = metrics_6m.get(mt) or {}
+            fi = entry.get("feature_importance")
+            if isinstance(fi, list) and fi:
+                names = [r.get("feature") for r in fi[:limit] if r.get("feature")]
+                if names:
+                    return names
+        return list(self.model.feature_names or [])[:limit]
 
     def get_historical_probabilities(self) -> Dict[str, Any]:
         """Generate historical probability series for charting.

@@ -91,11 +91,21 @@ type WalkForwardAggregate = {
   auc_mean: number; auc_std: number;
   brier_mean: number; brier_std: number;
 };
+interface UncertaintyBand {
+  p25?: number;
+  p50?: number;
+  p75?: number;
+  min?: number;
+  max?: number;
+  iqr?: number;
+  n_models?: number;
+}
 interface ProbabilityData {
   trained: boolean;
   probabilities?: Record<string, number>;
   raw_probabilities?: Record<string, number>;
   model_probabilities?: Record<string, Record<string, number>>;
+  uncertainty?: Record<string, UncertaintyBand>;
   signal?: string;
   signal_label?: string;
   decision_threshold_6m?: {
@@ -374,6 +384,7 @@ export const RecessionModel: React.FC = () => {
             const pct = probs[key] ?? 0;
             const dt = modelInfo?.default_threshold?.[key];
             const band = probBand(pct, dt);
+            const unc = probability?.uncertainty?.[key];
             return (
               <div key={key} className="flex flex-col items-center">
                 <GaugeChart score={pct} color={band.color} size={160} label={`${label} Horizon`} />
@@ -383,6 +394,12 @@ export const RecessionModel: React.FC = () => {
                 {dt && dt.threshold != null && (
                   <span className="text-[9px] text-terminal-text-dim mt-0.5 font-mono">
                     Elevated &ge; {(dt.threshold * 100).toFixed(0)}%
+                  </span>
+                )}
+                {unc && unc.p25 != null && unc.p75 != null && (
+                  <span className="text-[9px] text-terminal-text-dim mt-0.5 font-mono"
+                        title={`Model spread (P25–P75) across the ${unc.n_models} ensemble heads`}>
+                    Range {unc.p25.toFixed(0)}%–{unc.p75.toFixed(0)}%
                   </span>
                 )}
               </div>

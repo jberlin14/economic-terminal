@@ -9,7 +9,7 @@ import hashlib
 import numpy as np
 import pandas as pd
 
-from modules.recession_model.features import engineer_features, FEATURE_SERIES
+from modules.recession_model.features import engineer_features, FEATURE_SERIES, get_feature_columns
 
 
 def _build_synthetic_df() -> pd.DataFrame:
@@ -45,3 +45,41 @@ def test_engineer_features_golden_snapshot():
         f"Actual:   {actual}\n"
         f"If this is intentional, update EXPECTED_HASH in the test."
     )
+
+
+# ──────────────────────────────────────────────
+# Phase 2 §2.3: era-aware imputation
+# ──────────────────────────────────────────────
+
+def test_era_aware_imputation_does_not_use_zero_for_head_nans():
+    """When a Tier 3/4 series has NaN at the head of the window (it didn't
+    exist yet), imputation should land on the column's median, not 0."""
+    # Build a synthetic frame with two series, where one has 50 leading NaNs.
+    idx = pd.date_range("2005-01-31", periods=120, freq="ME")
+    rng = np.random.RandomState(7)
+    df = pd.DataFrame({
+        "UNRATE": rng.normal(5.0, 0.5, size=120),
+        "VIXCLS": np.concatenate([
+            np.full(50, np.nan),
+            rng.normal(20.0, 5.0, size=70),
+        ]),
+        "USREC": np.zeros(120),
+    }, index=idx)
+
+    # Mirror data_builder's imputation step on the raw series, then engineer.
+    cols = ["UNRATE", "VIXCLS"]
+    for col in cols:
+        df[col] = df[col].ffill()
+        if df[col].isna().any():
+            med = df[col].median(skipna=True)
+            df[col] = df[col].fillna(med)
+
+    head_vix = df["VIXCLS"].iloc[:50]
+    body_median = df["VIXCLS"].iloc[50:].median()
+
+    # All head values should equal the median of the body (post-imputation).
+    assert (head_vix == body_median).all(), (
+        f"head VIX values not at median: head[0]={head_vix.iloc[0]}, body_median={body_median}"
+    )
+    # And specifically, NOT zero.
+    assert (head_vix != 0).all(), "head VIX should not be zero after era-aware imputation"

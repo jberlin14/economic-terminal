@@ -21,7 +21,13 @@ from loguru import logger
 from sklearn.metrics import brier_score_loss, f1_score, roc_auc_score
 from sklearn.preprocessing import StandardScaler
 
-from .training import MODEL_TYPES, create_model, find_optimal_threshold
+from .training import (
+    MODEL_TYPES,
+    create_model,
+    find_optimal_threshold,
+    _balanced_sample_weights,
+    _undersample_majority,
+)
 
 
 # ──────────────────────────────────────────────
@@ -174,7 +180,20 @@ def run_walk_forward(
         for model_type in MODEL_TYPES:
             try:
                 model = create_model(model_type)
-                model.fit(X_inner_train, y_inner_train)
+                # Phase 2 §2.1: imbalance handling for estimators without
+                # class_weight. Must mirror training.train_single_model so
+                # walk-forward folds use the same fit recipe as the prod
+                # ensemble.
+                if model_type == "knn":
+                    X_fit, y_fit = _undersample_majority(X_inner_train, y_inner_train)
+                    model.fit(X_fit, y_fit)
+                elif model_type == "gradient_boosting":
+                    model.fit(
+                        X_inner_train, y_inner_train,
+                        sample_weight=_balanced_sample_weights(y_inner_train),
+                    )
+                else:
+                    model.fit(X_inner_train, y_inner_train)
                 inner_val_probs = _model_probs(model, X_inner_val)
                 test_probs = _model_probs(model, X_test_scaled)
                 per_model_inner_val_probs[model_type] = inner_val_probs
