@@ -431,9 +431,13 @@ class QueryHelper:
     
     def get_dashboard_summary(self) -> Dict[str, Any]:
         """Get a complete summary for the dashboard."""
+        # Bind once — `get_latest_yield_curve` is a real DB query and was
+        # being executed twice (once for the truthiness guard, once for
+        # to_dict()) on every dashboard fetch.
+        latest_yc = self.get_latest_yield_curve()
         return {
             'fx_rates': [r.to_dict() for r in self.get_latest_fx_rates()],
-            'yield_curve': self.get_latest_yield_curve().to_dict() if self.get_latest_yield_curve() else None,
+            'yield_curve': latest_yc.to_dict() if latest_yc else None,
             'credit_spreads': [s.to_dict() for s in self.get_latest_credit_spreads()],
             'recent_releases': [r.to_dict() for r in self.get_recent_releases(days=3)],
             'upcoming_releases': [r.to_dict() for r in self.get_upcoming_releases(days=7)],
