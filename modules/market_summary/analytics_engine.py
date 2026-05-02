@@ -15,22 +15,41 @@ from loguru import logger
 from modules.utils.timezone import get_current_time
 
 
-# Module-level cache: {cache_key: (result, timestamp)}
-_analytics_cache: Dict[str, tuple] = {}
-_CACHE_TTL_MINUTES = 5
+# Module-level cache for context + analytics results (Phase 2 §2.7 perf).
+# `gather_market_context` is called by every dashboard, scorecard, and
+# chat request — at ~3 page loads/min across multiple endpoints + tabs
+# that's tens of redundant FRED-touching calls a minute. A 60-second TTL
+# brings repeat calls down to ~1/min while staleness stays invisible at
+# the dashboard's daily-grained view.
+_context_cache: Dict[str, Any] = {"data": None, "timestamp": 0.0}
+_analytics_cache: Dict[int, Any] = {}  # keyed by id(context) so cached
+                                       # context's analytics short-circuit too
+_CACHE_TTL_SECONDS = 60
 
 
 def gather_market_context(db: Session) -> Dict[str, Any]:
     """
     Gather all raw market data (indicators, yields, FX, credit, news, calendar).
 
-    Returns a context dict consumable by compute_analytics().
-    Delegates to AIMarketNarrative's data-gathering methods.
+    Returns a context dict consumable by compute_analytics(). A 60-second
+    module-level cache absorbs the multi-endpoint stampede that occurs
+    when dashboard / scorecard / chat all fetch within the same poll
+    cycle. Delegates to AIMarketNarrative's data-gathering methods on
+    cache miss.
     """
     from .ai_narrative import AIMarketNarrative
 
+    now = time.time()
+    cached = _context_cache.get("data")
+    cached_at = _context_cache.get("timestamp", 0.0)
+    if cached is not None and (now - cached_at) < _CACHE_TTL_SECONDS:
+        return cached
+
     narrator = AIMarketNarrative(db)
-    return narrator._gather_context()
+    context = narrator._gather_context()
+    _context_cache["data"] = context
+    _context_cache["timestamp"] = now
+    return context
 
 
 def compute_analytics(context: Dict[str, Any], db: Optional[Session] = None) -> Dict[str, Any]:
@@ -41,8 +60,17 @@ def compute_analytics(context: Dict[str, Any], db: Optional[Session] = None) -> 
     yields (shape, WoW/MoM changes, breakevens), fx (DM/EM classification,
     USD direction), credit (stress levels), news (severity aggregation,
     priority headlines), regime (composite assessment).
+
+    Memoized per-context-object: if the caller is reusing the cached
+    context returned from `gather_market_context`, the analytics result
+    is reused too — saving the per-request derivation cost.
     """
     from .ai_narrative import AIMarketNarrative
+
+    cache_key = id(context)
+    cached = _analytics_cache.get(cache_key)
+    if cached is not None:
+        return cached
 
     # Create a narrator just to access its analytics methods
     # We pass db=None since analytics methods don't use self.db
@@ -52,7 +80,14 @@ def compute_analytics(context: Dict[str, Any], db: Optional[Session] = None) -> 
     narrator._client = None
     narrator._last_narrative = None
 
-    return narrator._compute_analytics(context)
+    result = narrator._compute_analytics(context)
+
+    # Bound cache size — only the most-recent context's analytics matter.
+    # Older entries get evicted when the cached context is replaced.
+    if len(_analytics_cache) > 4:
+        _analytics_cache.clear()
+    _analytics_cache[cache_key] = result
+    return result
 
 
 def _sanitize_for_json(obj):
