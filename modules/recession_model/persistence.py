@@ -10,6 +10,8 @@ training/prediction logic, not file paths and joblib calls.
 from __future__ import annotations
 
 import json
+import os
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -28,21 +30,31 @@ MODEL_DIR = Path("data/recession_model")
 
 
 def save_model(model: "RecessionModel") -> None:
-    """Save all model artifacts to disk."""
+    """Save all model artifacts to disk atomically.
+
+    Writes to a sibling staging dir first, then promotes individual files
+    via os.replace so a prediction request landing mid-write can never read
+    a partial state. metadata.json is written last because load_model()
+    keys off its existence.
+    """
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
+    staging = MODEL_DIR.with_name(MODEL_DIR.name + ".tmp")
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True, exist_ok=False)
 
     for horizon in HORIZONS:
         # Save scaler
         joblib.dump(
             model.scalers[horizon],
-            MODEL_DIR / f"scaler_{horizon}m.joblib",
+            staging / f"scaler_{horizon}m.joblib",
         )
         # Save each model type
         for model_type in MODEL_TYPES:
             if model_type in model.models.get(horizon, {}):
                 joblib.dump(
                     model.models[horizon][model_type],
-                    MODEL_DIR / f"model_{model_type}_{horizon}m.joblib",
+                    staging / f"model_{model_type}_{horizon}m.joblib",
                 )
         # Save fitted calibrator (Phase 2A Task A2). Skip horizons with no
         # calibrator (legacy state); identity calibrators ARE persisted so
@@ -51,7 +63,7 @@ def save_model(model: "RecessionModel") -> None:
         if calibrator is not None:
             joblib.dump(
                 calibrator,
-                MODEL_DIR / f"calibrator_{horizon}m.joblib",
+                staging / f"calibrator_{horizon}m.joblib",
             )
 
     # Save out-of-fold probability arrays as .npy files (too large for JSON)
@@ -64,7 +76,7 @@ def save_model(model: "RecessionModel") -> None:
                 walk_forward_metrics_meta[str(horizon)] = wf
             arr = model.oof_probs.get(horizon) if model.oof_probs else None
             if arr is not None:
-                np.save(MODEL_DIR / f"oof_probs_{horizon}m.npy", arr)
+                np.save(staging / f"oof_probs_{horizon}m.npy", arr)
                 n_total = int(arr.shape[0])
                 n_predicted = int(np.sum(~np.isnan(arr)))
                 oof_summary[str(horizon)] = {
@@ -113,8 +125,26 @@ def save_model(model: "RecessionModel") -> None:
         # Training quantiles for live drift scoring (Phase 2 §2.5).
         "training_quantiles": getattr(model, "training_quantiles", {}) or {},
     }
-    with open(MODEL_DIR / "metadata.json", "w") as f:
+    # metadata.json is written into staging FIRST, then promoted last so
+    # load_model() keys off its presence in MODEL_DIR with all artifacts
+    # already in place.
+    staging_meta = staging / "metadata.json"
+    with open(staging_meta, "w") as f:
         json.dump(meta, f, indent=2)
+
+    # Promote each staged file via os.replace (atomic per-file on POSIX
+    # and Windows). Promote metadata.json last so a partial promotion
+    # leaves the prior model loadable.
+    staged_files = sorted(p for p in staging.iterdir() if p.name != "metadata.json")
+    for src in staged_files:
+        os.replace(src, MODEL_DIR / src.name)
+    os.replace(staging_meta, MODEL_DIR / "metadata.json")
+
+    # Clean up any leftover empty staging dir.
+    try:
+        shutil.rmtree(staging)
+    except OSError:
+        pass
 
     logger.success(f"Multi-model ensemble saved to {MODEL_DIR}")
 

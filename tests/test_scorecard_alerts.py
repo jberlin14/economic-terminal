@@ -86,6 +86,36 @@ def test_composite_band_crossing_dedups_same_day(db_session):
     assert len(alerts) == 1
 
 
+def test_composite_band_two_transitions_same_day_both_emit(db_session):
+    """Multiple band crossings on the same day should each emit. Previously
+    the dedup hash collided on (alert_type, related_entity, day) and the
+    second crossing was silently swallowed."""
+    from modules.risk_scorecard.alerts import check_composite_band_crossing
+    from modules.data_storage.schema import RiskAlert, AIMarketJournal
+
+    yesterday = date.today() - timedelta(days=1)
+    _seed_journal(db_session, yesterday, composite=20.0)  # green
+
+    # Noon: green → yellow.
+    s1 = check_composite_band_crossing(db_session, current_composite=50.0)
+    assert s1["alert_id"] is not None
+    assert s1["prior_band"] == "green" and s1["current_band"] == "yellow"
+
+    # Update prior journal to reflect the new state, then 6pm: yellow → red.
+    prior = db_session.query(AIMarketJournal).filter(
+        AIMarketJournal.date == yesterday
+    ).first()
+    prior.pillar_scores_snapshot = {"composite": 50.0, "pillars": {}}
+    db_session.commit()
+
+    s2 = check_composite_band_crossing(db_session, current_composite=80.0)
+    assert s2["alert_id"] is not None
+    assert s2["prior_band"] == "yellow" and s2["current_band"] == "red"
+
+    alerts = db_session.query(RiskAlert).all()
+    assert len(alerts) == 2  # both emitted, distinct dedup partitions
+
+
 def test_composite_band_no_change_no_alert(db_session):
     from modules.risk_scorecard.alerts import check_composite_band_crossing
     from modules.data_storage.schema import RiskAlert

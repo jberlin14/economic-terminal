@@ -80,11 +80,12 @@ def _compute_pillar_deltas(
     of past pillar scores from the journal. The "current" score is appended
     notionally at the tail; deltas are taken against:
       - 1D: previous journal entry (sparkline[-1])
-      - 1W: ~7 entries back
-      - 1M: ~30 entries back (or the oldest available)
+      - 1W: 7 entries back (None when fewer than 7 entries are available)
+      - 1M: 30 entries back (None when fewer than 30 entries are available)
 
     Returns delta values (current - past) so positive = risk worsened.
-    Missing positions yield None.
+    Missing positions yield None — UI hides the cell rather than showing
+    an inflated "1M" label that's actually 1D worth of history.
     """
     valid = [v for v in historical_series if v is not None]
     out: Dict[str, Optional[float]] = {"d1": None, "w1": None, "m1": None}
@@ -97,17 +98,15 @@ def _compute_pillar_deltas(
     # 1D: most-recent previous entry
     out["d1"] = _safe_delta(valid[-1])
 
-    # 1W: ~7 entries back
+    # 1W: exactly 7 entries back; otherwise None.
     if len(valid) >= 7:
         out["w1"] = _safe_delta(valid[-7])
-    elif valid:
-        out["w1"] = _safe_delta(valid[0])
 
-    # 1M: ~30 entries back, or oldest if shorter
+    # 1M: exactly 30 entries back; otherwise None. Falling back to "oldest
+    # available" mislabels short windows (e.g. 14d sparkline → 1W and 1M
+    # collapse to the same value).
     if len(valid) >= 30:
         out["m1"] = _safe_delta(valid[-30])
-    elif valid:
-        out["m1"] = _safe_delta(valid[0])
 
     return out
 
@@ -239,7 +238,10 @@ class RiskScorecard:
         # derive their own meaningful trend from indicator dynamics
         # (inflation, labor, yield curve) keep their existing label.
         # Also computes 1D/1W/1M deltas per pillar (Phase 3.6).
-        SPARKLINE_OVERRIDE_PILLARS = {"credit", "volatility", "geopolitical", "housing"}
+        # Housing intentionally NOT in this set: its YoY-direction trend from
+        # _score_housing (HOUST/PERMIT YoY) is more informative than a noisy
+        # 14-day sparkline diff.
+        SPARKLINE_OVERRIDE_PILLARS = {"credit", "volatility", "geopolitical"}
         for pillar in pillars:
             pid = pillar["id"]
             pillar_series = [s.get(pid) for s in sparkline_data] if sparkline_data else []
@@ -254,6 +256,13 @@ class RiskScorecard:
 
         elapsed = int((time.time() - start) * 1000)
 
+        # Single recession-predictor call. Both the display banner and alert
+        # evaluation reuse the result so we don't double-fetch FRED + run the
+        # ensemble twice per request (Phase 4.4 fix).
+        ml_full = self._fetch_recession_ml_full()
+        recession_ml = self._summarize_recession_ml(ml_full)
+        drift_payload = ml_full.get("drift") if isinstance(ml_full, dict) else None
+
         result = {
             "composite_score": composite,
             "composite_color": _color_for_score(composite),
@@ -261,7 +270,7 @@ class RiskScorecard:
             "pillars": pillars,
             "sparkline_dates": [s["date"] for s in sparkline_data] if sparkline_data else [],
             "composite_sparkline": [s["composite"] for s in sparkline_data] if sparkline_data else [composite],
-            "recession_ml": self._fetch_recession_ml(),
+            "recession_ml": recession_ml,
             "assessed_at": get_current_time().isoformat(),
             "elapsed_ms": elapsed,
         }
@@ -279,19 +288,6 @@ class RiskScorecard:
         try:
             from .alerts import evaluate_scorecard_alerts
 
-            drift_payload = None
-            ml = result.get("recession_ml")
-            if ml is not None:
-                # Pull the predictor's drift report if available — same call
-                # the dedicated recession page uses, just shared here.
-                try:
-                    from modules.recession_model.predictor import RecessionPredictor
-
-                    predictor = RecessionPredictor(self.db)
-                    full = predictor.get_current_probability()
-                    drift_payload = full.get("drift") if isinstance(full, dict) else None
-                except Exception:
-                    drift_payload = None
             fired = evaluate_scorecard_alerts(self.db, result, drift=drift_payload)
             if fired:
                 result["alerts_fired"] = fired
@@ -336,15 +332,11 @@ class RiskScorecard:
             self.db.commit()
             return
 
-        # No journal entry yet for today — create a minimal stub so the
-        # sparkline picks up today's value once the journal job runs and
-        # fills in the rest. Other fields stay null.
-        stub = AIMarketJournal(
-            date=today,
-            pillar_scores_snapshot=compact,
-        )
-        self.db.add(stub)
-        self.db.commit()
+        # No journal entry yet for today — skip persisting. Creating a stub
+        # row with regime/narrative/indicator_snapshot all null pollutes
+        # downstream readers (regime timeline, change detector). The 7 AM ET
+        # journal job owns row creation; once it runs, the next scorecard
+        # request will fill in pillar_scores_snapshot via the update path.
 
     # ──────────────────────────────────────────
     # Pillar Scorers
@@ -583,6 +575,10 @@ class RiskScorecard:
         yield_analytics = analytics.get("yields", {})
         yields_ctx = context.get("yields", {})
         spreads = yields_ctx.get("spreads", {})
+        # Treasury yields are populated daily from FRED and lag by ~1 day.
+        # Honest dating uses the YieldCurve row's timestamp.
+        curve_ts = yields_ctx.get("timestamp")
+        data_freshness = curve_ts[:10] if isinstance(curve_ts, str) else None
 
         components = []
         scores = []
@@ -627,13 +623,16 @@ class RiskScorecard:
             "color": _color_for_score(score),
             "trend": trend.lower(),
             "components": components,
-            "data_freshness": str(datetime.now().date()),
+            "data_freshness": data_freshness,
         }
 
     def _score_credit(self, context: Dict, analytics: Dict) -> Dict:
         """Score credit market risk (0-100)."""
         credit_analytics = analytics.get("credit", {})
         credit_ctx = context.get("credit", {})
+        # BAA/AAA credit spreads can lag 3+ days on FRED. Pull the latest
+        # CreditSpread.timestamp directly so freshness reflects real staleness.
+        data_freshness = self._latest_credit_spread_date()
 
         components = []
         scores = []
@@ -677,7 +676,7 @@ class RiskScorecard:
             "color": _color_for_score(score),
             "trend": "stable",
             "components": components,
-            "data_freshness": str(datetime.now().date()),
+            "data_freshness": data_freshness,
         }
 
     def _score_volatility(self, live_data: Dict) -> Dict:
@@ -927,6 +926,22 @@ class RiskScorecard:
     # Data Fetchers
     # ──────────────────────────────────────────
 
+    def _latest_credit_spread_date(self) -> Optional[str]:
+        """Latest CreditSpread row's timestamp as YYYY-MM-DD, or None."""
+        try:
+            from modules.data_storage.schema import CreditSpread
+
+            row = (
+                self.db.query(CreditSpread)
+                .order_by(CreditSpread.timestamp.desc())
+                .first()
+            )
+            if row and row.timestamp:
+                return row.timestamp.date().isoformat()
+        except Exception as e:
+            logger.debug(f"Credit spread freshness lookup skipped: {e}")
+        return None
+
     def _compute_em_fx_zscore(self, window_days: int = 20) -> Optional[Dict[str, Any]]:
         """
         Phase 3.5: Compute the 20-day z-score of average EM-currency 24h moves.
@@ -1019,34 +1034,48 @@ class RiskScorecard:
             logger.debug(f"EM FX z-score computation skipped: {e}")
             return None
 
-    def _fetch_recession_ml(self) -> Optional[Dict[str, Any]]:
+    def _fetch_recession_ml_full(self) -> Optional[Dict[str, Any]]:
         """
-        Phase 3.4: Surface the ML model's 6m recession probability as a
-        display-only field on the scorecard response. NOT weighted into the
-        composite (signals overlap with the pillars and would double-count).
+        Phase 3.4: Single call into RecessionPredictor.get_current_probability().
+        Returns the full payload (including drift) or None on failure.
 
-        Returns None if the model isn't trained or import fails — the UI
-        should hide the banner gracefully.
+        The compute() flow consumes this once and feeds both the display
+        banner (via _summarize_recession_ml) and alert evaluation (drift
+        payload). Previously these were two independent calls — each hits
+        FRED + ensemble predict, which is expensive on a cache miss.
         """
         try:
             from modules.recession_model.predictor import RecessionPredictor
 
             predictor = RecessionPredictor(self.db)
             current = predictor.get_current_probability()
+            if not isinstance(current, dict):
+                return None
             if not current.get("trained") or current.get("error"):
                 return None
-            probs = current.get("probabilities") or {}
-            return {
-                "prob_3m": probs.get("3m"),
-                "prob_6m": probs.get("6m"),
-                "prob_12m": probs.get("12m"),
-                "signal": current.get("signal"),
-                "signal_label": current.get("signal_label"),
-                "decision_threshold_6m": current.get("decision_threshold_6m"),
-            }
+            return current
         except Exception as e:
             logger.debug(f"Recession ML fetch skipped: {e}")
             return None
+
+    @staticmethod
+    def _summarize_recession_ml(payload: Optional[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+        """Project the predictor payload to the display-only banner fields.
+
+        NOT weighted into the composite — signals overlap with the pillars
+        and would double-count.
+        """
+        if not isinstance(payload, dict):
+            return None
+        probs = payload.get("probabilities") or {}
+        return {
+            "prob_3m": probs.get("3m"),
+            "prob_6m": probs.get("6m"),
+            "prob_12m": probs.get("12m"),
+            "signal": payload.get("signal"),
+            "signal_label": payload.get("signal_label"),
+            "decision_threshold_6m": payload.get("decision_threshold_6m"),
+        }
 
     def _fetch_live_data(self) -> Dict[str, Any]:
         """Fetch live VIX, oil, gold data via yfinance (Phase 2 §2.7 cached).

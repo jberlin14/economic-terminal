@@ -34,10 +34,24 @@ def _band(score: float) -> str:
     return "red"
 
 
-def _alert_hash(alert_type: str, related_entity: str, day: date) -> str:
-    """Stable per-day dedup key. Includes the date so a same-day repeat
-    poll doesn't re-emit, but a next-day re-trigger does."""
-    raw = f"{alert_type}|{related_entity}|{day.isoformat()}"
+def _alert_hash(
+    alert_type: str,
+    related_entity: str,
+    day: date,
+    key_suffix: Optional[str] = None,
+) -> str:
+    """Stable per-day dedup key.
+
+    Same-day repeat polls dedup. A next-day re-trigger emits again because
+    the date is part of the key. `key_suffix` further partitions the dedup
+    space — used for composite band crossings so that green→yellow at noon
+    and yellow→red at 6pm don't collide on a single "scorecard.composite"
+    key for the day.
+    """
+    parts = [alert_type, related_entity, day.isoformat()]
+    if key_suffix:
+        parts.append(key_suffix)
+    raw = "|".join(parts)
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
@@ -56,10 +70,11 @@ def _emit(
     threshold_value: Optional[float] = None,
     details: Optional[Dict[str, Any]] = None,
     today: Optional[date] = None,
+    key_suffix: Optional[str] = None,
 ) -> Optional[int]:
     """Insert a new alert if no same-day duplicate exists. Returns id or None."""
     today = today or date.today()
-    h = _alert_hash(alert_type, related_entity, today)
+    h = _alert_hash(alert_type, related_entity, today, key_suffix)
     if _existing_alert(db, h):
         return None
     alert = RiskAlert(
@@ -130,6 +145,9 @@ def check_composite_band_crossing(
         threshold_value=33.0 if current_band == "green" else (66.0 if current_band == "yellow" else 67.0),
         details={"prior_band": prior_band, "current_band": current_band, "prior_composite": prior_composite},
         today=today,
+        # Distinct dedup partitions per band transition so a green→yellow
+        # crossing at noon doesn't suppress yellow→red at 6pm same day.
+        key_suffix=f"{prior_band}->{current_band}",
     )
     return {
         "alert_id": alert_id,

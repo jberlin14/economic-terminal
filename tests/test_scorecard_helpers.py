@@ -59,14 +59,24 @@ def test_pillar_deltas_full_history():
     assert deltas["m1"] == 35.0  # 55 - 20 (oldest entry)
 
 
-def test_pillar_deltas_short_history_uses_oldest():
+def test_pillar_deltas_short_history_only_1d_populated():
     history = [40.0, 45.0, 47.0]  # only 3 entries
     deltas = _compute_pillar_deltas(current_score=50.0, historical_series=history)
     # 1D: against most-recent
     assert deltas["d1"] == 3.0
-    # 1W and 1M fall back to oldest available since len < 7 / 30
-    assert deltas["w1"] == 10.0  # 50 - 40
-    assert deltas["m1"] == 10.0
+    # 1W and 1M now require enough history; otherwise None so UI hides
+    # the cell instead of showing a misleading short-window delta.
+    assert deltas["w1"] is None
+    assert deltas["m1"] is None
+
+
+def test_pillar_deltas_14d_history_no_1m():
+    # 14-day default sparkline: 1D + 1W populated, 1M None.
+    history = [float(x) for x in range(14)]  # 0..13
+    deltas = _compute_pillar_deltas(current_score=15.0, historical_series=history)
+    assert deltas["d1"] == 2.0  # 15 - 13
+    assert deltas["w1"] == 8.0  # 15 - 7
+    assert deltas["m1"] is None
 
 
 def test_pillar_deltas_no_history_all_none():
