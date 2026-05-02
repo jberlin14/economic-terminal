@@ -306,8 +306,16 @@ class RiskScorecard:
           }
         Trends are included so the sparkline reader can show today's pillar
         trend even if the live derivation drifts vs. the stored snapshot.
+
+        Uses a dedicated session (not the request-scoped one) so the
+        side-effect commit can't accidentally publish unrelated pending
+        state from the request handler. Skips creating a stub row when
+        today's journal entry doesn't exist — the 7 AM ET journal job
+        owns row creation; once it runs, the next scorecard request fills
+        in pillar_scores_snapshot via the update path.
         """
         from modules.data_storage.schema import AIMarketJournal
+        from modules.data_storage.database import SessionLocal
 
         today = get_current_time().date()
         compact = {
@@ -324,19 +332,21 @@ class RiskScorecard:
             },
         }
 
-        existing = self.db.query(AIMarketJournal).filter(
-            AIMarketJournal.date == today
-        ).first()
-        if existing:
-            existing.pillar_scores_snapshot = compact
-            self.db.commit()
-            return
-
-        # No journal entry yet for today — skip persisting. Creating a stub
-        # row with regime/narrative/indicator_snapshot all null pollutes
-        # downstream readers (regime timeline, change detector). The 7 AM ET
-        # journal job owns row creation; once it runs, the next scorecard
-        # request will fill in pillar_scores_snapshot via the update path.
+        write_db = SessionLocal()
+        try:
+            existing = write_db.query(AIMarketJournal).filter(
+                AIMarketJournal.date == today
+            ).first()
+            if existing:
+                existing.pillar_scores_snapshot = compact
+                write_db.commit()
+            # No-op when today's row doesn't exist yet (journal job not
+            # run): see docstring above.
+        except Exception:
+            write_db.rollback()
+            raise
+        finally:
+            write_db.close()
 
     # ──────────────────────────────────────────
     # Pillar Scorers
