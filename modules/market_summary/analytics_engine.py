@@ -22,8 +22,14 @@ from modules.utils.timezone import get_current_time
 # brings repeat calls down to ~1/min while staleness stays invisible at
 # the dashboard's daily-grained view.
 _context_cache: Dict[str, Any] = {"data": None, "timestamp": 0.0}
-_analytics_cache: Dict[int, Any] = {}  # keyed by id(context) so cached
-                                       # context's analytics short-circuit too
+# Single-slot analytics cache keyed by id(context). We don't allow more
+# than one entry — when gather_market_context returns a fresh context
+# (TTL expired), the previous analytics entry is replaced. Multi-entry
+# caching previously risked Python id() reuse: the GC could reclaim the
+# old context's id, a fresh dict could land at the same address, and
+# stale analytics would be served. Now: at most one entry, always
+# matching the currently-cached context.
+_analytics_cache: Dict[str, Any] = {"context_id": None, "data": None}
 _CACHE_TTL_SECONDS = 60
 
 
@@ -49,6 +55,10 @@ def gather_market_context(db: Session) -> Dict[str, Any]:
     context = narrator._gather_context()
     _context_cache["data"] = context
     _context_cache["timestamp"] = now
+    # Invalidate the analytics memo whenever the context changes so a
+    # stale (id-aliased) entry can never be returned for a fresh context.
+    _analytics_cache["context_id"] = None
+    _analytics_cache["data"] = None
     return context
 
 
@@ -68,9 +78,11 @@ def compute_analytics(context: Dict[str, Any], db: Optional[Session] = None) -> 
     from .ai_narrative import AIMarketNarrative
 
     cache_key = id(context)
-    cached = _analytics_cache.get(cache_key)
-    if cached is not None:
-        return cached
+    if (
+        _analytics_cache["context_id"] == cache_key
+        and _analytics_cache["data"] is not None
+    ):
+        return _analytics_cache["data"]
 
     # Create a narrator just to access its analytics methods
     # We pass db=None since analytics methods don't use self.db
@@ -81,12 +93,8 @@ def compute_analytics(context: Dict[str, Any], db: Optional[Session] = None) -> 
     narrator._last_narrative = None
 
     result = narrator._compute_analytics(context)
-
-    # Bound cache size — only the most-recent context's analytics matter.
-    # Older entries get evicted when the cached context is replaced.
-    if len(_analytics_cache) > 4:
-        _analytics_cache.clear()
-    _analytics_cache[cache_key] = result
+    _analytics_cache["context_id"] = cache_key
+    _analytics_cache["data"] = result
     return result
 
 
