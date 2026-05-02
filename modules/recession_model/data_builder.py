@@ -29,6 +29,7 @@ from .features import (
     START_DATE,
     HORIZONS,
     CORE_REQUIRED,
+    add_availability_indicators,
     engineer_features,
     get_feature_columns,
     get_release_lag,
@@ -58,6 +59,12 @@ class RecessionDataBuilder:
         recession = self._fetch_recession_indicator()
 
         df = self._merge_to_monthly(raw, recession)
+        # Add availability indicators BEFORE imputation, so the masks reflect
+        # actual NaN positions on raw FRED columns rather than the median-
+        # filled values (Phase 2 §2.3 follow-up — pairs with the median
+        # imputation to flag eras where late-starting series weren't
+        # observed).
+        df = add_availability_indicators(df)
         df = engineer_features(df)
         df = self._build_targets(df)
 
@@ -262,6 +269,12 @@ class RecessionDataBuilder:
                 monthly[series_id] = monthly[series_id].iloc[:-lag]
 
         df = pd.DataFrame(monthly)
+
+        # Availability indicators on raw columns BEFORE engineer_features.
+        # In live mode, missing series result in absent (not NaN) columns,
+        # which `add_availability_indicators` simply skips — those features
+        # default to 0.0 downstream which honestly reflects unavailability.
+        df = add_availability_indicators(df)
 
         # Engineer features — exact same function as training
         df = engineer_features(df)

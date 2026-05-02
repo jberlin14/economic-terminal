@@ -9,7 +9,13 @@ import hashlib
 import numpy as np
 import pandas as pd
 
-from modules.recession_model.features import engineer_features, FEATURE_SERIES, get_feature_columns
+from modules.recession_model.features import (
+    add_availability_indicators,
+    engineer_features,
+    FEATURE_SERIES,
+    LATE_STARTING_SERIES,
+    get_feature_columns,
+)
 
 
 def _build_synthetic_df() -> pd.DataFrame:
@@ -83,3 +89,52 @@ def test_era_aware_imputation_does_not_use_zero_for_head_nans():
     )
     # And specifically, NOT zero.
     assert (head_vix != 0).all(), "head VIX should not be zero after era-aware imputation"
+
+
+# ──────────────────────────────────────────────
+# Phase 2 §2.3 follow-up: availability indicators
+# ──────────────────────────────────────────────
+
+def test_availability_indicators_mark_nan_positions_zero():
+    """A column with leading NaNs should produce a `<col>_avail` series
+    that's 0 in NaN positions and 1 in observed positions."""
+    idx = pd.date_range("1985-01-31", periods=10, freq="ME")
+    df = pd.DataFrame({
+        "VIXCLS": [np.nan, np.nan, np.nan, 18.0, 19.5, 20.1, 22.3, 21.0, 19.8, 20.5],
+    }, index=idx)
+    out = add_availability_indicators(df)
+    assert "VIXCLS_avail" in out.columns
+    avail = out["VIXCLS_avail"].tolist()
+    assert avail == [0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0]
+
+
+def test_availability_indicators_only_for_late_starting_series():
+    """Tier 1 / Tier 2 series should not get availability indicators —
+    they're observed across the whole training window."""
+    idx = pd.date_range("2005-01-31", periods=10, freq="ME")
+    df = pd.DataFrame({
+        "UNRATE": np.linspace(4.0, 5.0, 10),  # Tier 1
+        "VIXCLS": np.linspace(15.0, 25.0, 10),  # Tier 3
+    }, index=idx)
+    out = add_availability_indicators(df)
+    assert "UNRATE_avail" not in out.columns
+    assert "VIXCLS_avail" in out.columns
+
+
+def test_availability_indicators_skips_missing_series():
+    """If a late-starting series isn't present in the frame at all (e.g.
+    FRED fetch failed), the helper just doesn't add an avail column — it
+    doesn't error or fabricate data."""
+    idx = pd.date_range("2005-01-31", periods=5, freq="ME")
+    df = pd.DataFrame({"UNRATE": [4.0, 4.1, 4.2, 4.0, 3.9]}, index=idx)
+    out = add_availability_indicators(df)
+    avail_cols = [c for c in out.columns if c.endswith("_avail")]
+    assert avail_cols == []
+
+
+def test_availability_indicators_idempotent():
+    idx = pd.date_range("1985-01-31", periods=5, freq="ME")
+    df = pd.DataFrame({"BAA10Y": [np.nan, 2.0, 2.1, np.nan, 2.3]}, index=idx)
+    once = add_availability_indicators(df)
+    twice = add_availability_indicators(once)
+    assert (once["BAA10Y_avail"] == twice["BAA10Y_avail"]).all()

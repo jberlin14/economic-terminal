@@ -135,6 +135,15 @@ HORIZONS = [3, 6, 12]
 # Core features that must be non-null (Tier 1 only)
 CORE_REQUIRED = {"UNRATE", "PAYEMS", "INDPRO", "CPIAUCSL", "FEDFUNDS"}
 
+# Series with substantial pre-modern-era NaN populations. Median imputation
+# leaves a constant value across years where the series didn't exist
+# (e.g. VIX before 1990, BAA10Y before 1986, JOLTS before 2000), which
+# correlates with that era's recessions and risks being treated as signal
+# by the L1 logistic. Pairing each such column with a `<col>_avail`
+# indicator lets the model learn to ignore the imputed value when the
+# series wasn't actually observed.
+LATE_STARTING_SERIES = set(TIER3_SERIES.keys()) | set(TIER4_SERIES.keys())
+
 
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     """Create 80+ derived features from raw series."""
@@ -516,6 +525,24 @@ def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
 
     # Defragment the DataFrame after all column additions
     return df.copy()
+
+
+def add_availability_indicators(df: pd.DataFrame) -> pd.DataFrame:
+    """For each late-starting series present in `df`, append a `<col>_avail`
+    column: 1.0 where the raw value was observed, 0.0 where it was NaN.
+
+    Must be called BEFORE forward-fill / median imputation overwrites the
+    NaN positions. Returns the DataFrame with the new columns appended.
+    Idempotent — re-running on a frame that already has the indicators
+    overwrites them with the same values.
+    """
+    new_cols = {}
+    for col in LATE_STARTING_SERIES:
+        if col in df.columns:
+            new_cols[f"{col}_avail"] = df[col].notna().astype(float)
+    if new_cols:
+        return df.assign(**new_cols)
+    return df
 
 
 def get_feature_columns(df: pd.DataFrame) -> List[str]:
