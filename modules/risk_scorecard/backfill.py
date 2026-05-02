@@ -183,7 +183,13 @@ def backfill_pillar_scores_snapshot(
         entry.pillar_scores_snapshot = compact
         filled += 1
 
-    if not dry_run and filled > 0:
+    if dry_run:
+        # The caller may pass a session managed by `get_db_context()` (or
+        # FastAPI's `Depends(get_db)`) which auto-commits on clean exit —
+        # if we don't roll back here, dirtied entries get committed
+        # despite the dry-run flag. Expunge to clear identity-map state too.
+        db.rollback()
+    elif filled > 0:
         db.commit()
 
     return {

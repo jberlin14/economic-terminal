@@ -189,6 +189,10 @@ def test_backfill_overwrite_replays_reconstructed_snapshots(db_session):
 
 
 def test_backfill_dry_run_does_not_commit(db_session):
+    """Dry-run rolls back any dirtied state so a context-managed session
+    that auto-commits on clean exit doesn't accidentally publish the
+    reconstruction. Regression for the bug where dry-run reported
+    committed=False but get_db_context still committed the changes."""
     from modules.risk_scorecard.backfill import backfill_pillar_scores_snapshot
 
     today = date.today()
@@ -202,7 +206,9 @@ def test_backfill_dry_run_does_not_commit(db_session):
     assert report["filled"] == 1
     assert report["committed"] is False
 
-    # Re-read from DB on a fresh session-state to confirm uncommitted.
+    # Simulate the get_db_context auto-commit-on-exit path: any dirtied
+    # state must NOT be flushed to disk after the function returns.
+    db_session.commit()
     db_session.expire_all()
     from modules.data_storage.schema import AIMarketJournal
     entry = db_session.query(AIMarketJournal).first()
