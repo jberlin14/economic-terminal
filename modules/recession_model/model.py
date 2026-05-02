@@ -317,11 +317,19 @@ class RecessionModel:
             )
 
         # Persist per-feature training quantiles for live drift scoring
-        # (Phase 2 §2.5). Computed once here so predictor.get_current_probability
-        # can compare the live snapshot against this baseline cheaply.
+        # (Phase 2 §2.5). Computed on the TRAINING SLICE ONLY — including
+        # the held-out test rows would leak holdout-window observations
+        # into the live drift baseline, producing optimistic out-of-bounds
+        # detection (debug-review C-1).
         try:
-            self.training_quantiles = compute_training_quantiles(df, self.feature_names)
-            logger.info(f"Computed training quantiles for {len(self.training_quantiles)} features")
+            train_slice = df.iloc[:split_idx]
+            self.training_quantiles = compute_training_quantiles(
+                train_slice, self.feature_names
+            )
+            logger.info(
+                f"Computed training quantiles on training slice "
+                f"({len(train_slice)} rows) for {len(self.training_quantiles)} features"
+            )
         except Exception as e:
             logger.warning(f"Failed to compute training quantiles: {e}")
             self.training_quantiles = {}

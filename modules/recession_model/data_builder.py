@@ -270,6 +270,19 @@ class RecessionDataBuilder:
 
         df = pd.DataFrame(monthly)
 
+        # Surface late-starting series that disappeared in this live fetch
+        # (FRED outage, transient rate-limit, retired series). The model's
+        # `_avail` indicators correctly route these features to "ignore"
+        # — but silent disappearance is a debugging hazard, so log it.
+        from .features import LATE_STARTING_SERIES
+
+        live_missing_late = [s for s in LATE_STARTING_SERIES if s not in df.columns]
+        if live_missing_late:
+            logger.warning(
+                f"Late-starting series missing from live fetch "
+                f"(treated as unavailable): {sorted(live_missing_late)}"
+            )
+
         # Availability indicators on raw columns BEFORE engineer_features.
         # In live mode, missing series result in absent (not NaN) columns,
         # which `add_availability_indicators` simply skips — those features
