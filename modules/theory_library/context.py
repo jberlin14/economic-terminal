@@ -23,7 +23,7 @@ The loader maps these to the three tiers:
 import os
 import re
 from pathlib import Path
-from typing import List, Dict, Optional, Set, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 
 # Root directory for theory documents

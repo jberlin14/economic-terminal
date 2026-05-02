@@ -390,8 +390,26 @@ async def retrain_recession_model():
     Runs in a thread so the async scheduler stays responsive. Logs but
     doesn't crash on failure — model artifacts on disk continue to serve
     predictions until the next successful retrain.
+
+    Coordinates with the UI `/recession/train` endpoint via the shared
+    `training_state` module so that a UI-triggered train and a scheduled
+    retrain cannot run concurrently. Concurrent trains would interleave
+    their writes to the same artifact files (per-file atomic save in
+    persistence.py prevents partial reads of a single file but does NOT
+    prevent a logistic_6m artifact from train A landing alongside an
+    rf_6m artifact from train B).
     """
     logger.info("Scheduled: Retraining recession model (monthly)...")
+    from modules.recession_model import training_state as _ts
+
+    if not _ts.acquire(owner="scheduler", progress="Scheduled monthly retrain"):
+        snap = _ts.snapshot()
+        logger.warning(
+            "Skipping monthly retrain: training already in progress "
+            f"(owner={snap.get('owner')}, started_at={snap.get('started_at')})"
+        )
+        return
+
     try:
         from modules.recession_model import RecessionModel
 
@@ -400,11 +418,13 @@ async def retrain_recession_model():
             return model.train()
 
         result = await asyncio.to_thread(_train)
+        _ts.mark_completed(result)
         logger.success(
             "Monthly recession retrain complete: "
             f"trained_at={result.get('metadata', {}).get('trained_at')}"
         )
     except Exception as e:
+        _ts.mark_failed(str(e))
         logger.error(f"Monthly recession retrain failed: {e}")
         import traceback
         traceback.print_exc()

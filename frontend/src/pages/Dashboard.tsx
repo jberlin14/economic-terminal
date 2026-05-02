@@ -47,20 +47,21 @@ export const Dashboard: React.FC = () => {
           timestamp: lastMessage.timestamp || prev.timestamp
         } : null);
       } else if (lastMessage.type === 'yield_update' && data) {
-        // Check if this is credit spreads or yield curve
-        if (lastMessage.data.type === 'credit_spreads') {
-          setData(prev => prev ? {
-            ...prev,
-            credit_spreads: lastMessage.data.spreads,
-            timestamp: lastMessage.timestamp || prev.timestamp
-          } : null);
-        } else {
-          setData(prev => prev ? {
-            ...prev,
-            yield_curve: lastMessage.data,
-            timestamp: lastMessage.timestamp || prev.timestamp
-          } : null);
-        }
+        setData(prev => prev ? {
+          ...prev,
+          yield_curve: lastMessage.data,
+          timestamp: lastMessage.timestamp || prev.timestamp
+        } : null);
+      } else if (lastMessage.type === 'credit_update' && data) {
+        // Credit spreads ride their own broadcast type now — previously
+        // this branch was nested inside `yield_update` checking
+        // `data.type === 'credit_spreads'`, which never matched because
+        // credit updates are emitted under `type: 'credit_update'`.
+        setData(prev => prev ? {
+          ...prev,
+          credit_spreads: lastMessage.data.spreads,
+          timestamp: lastMessage.timestamp || prev.timestamp
+        } : null);
       } else if (lastMessage.type === 'alert' && data) {
         setData(prev => prev ? {
           ...prev,

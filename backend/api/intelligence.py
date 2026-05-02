@@ -496,62 +496,39 @@ async def get_recession_model_info():
         raise HTTPException(status_code=500, detail=str(e))
 
 
-# Training state for async tracking
-_training_state = {
-    "status": "idle",  # idle | training | completed | failed
-    "progress": None,
-    "result": None,
-    "error": None,
-    "started_at": None,
-    "completed_at": None,
-}
+# Shared training-state coordinator. Both this endpoint and the
+# scheduler's monthly/drift-triggered retrain go through it so concurrent
+# trains cannot interleave their writes to the same artifact files.
+from modules.recession_model import training_state as _ts
 
 
 def _run_training():
-    """Run model training synchronously (called in background thread)."""
+    """Run model training synchronously (called in background thread).
+
+    Caller MUST have already acquired training_state. Updates progress
+    along the way and marks completion at the end.
+    """
     from modules.recession_model import RecessionModel
-    import time
 
-    _training_state["status"] = "training"
-    _training_state["progress"] = "Fetching FRED data..."
-    _training_state["started_at"] = time.time()
-    _training_state["result"] = None
-    _training_state["error"] = None
-
+    _ts.update_progress("Fetching FRED data...")
     model = RecessionModel()
     result = model.train()
-
-    _training_state["status"] = "completed"
-    _training_state["progress"] = None
-    _training_state["result"] = result
-    _training_state["completed_at"] = time.time()
+    _ts.mark_completed(result)
     return result
 
 
 @router.post("/recession/train")
 async def train_recession_model():
     """Kick off async recession model training. Returns immediately."""
-    import time
-
-    if _training_state["status"] == "training":
+    if not _ts.acquire(owner="ui"):
         return {"status": "already_training", "message": "Training is already in progress"}
-
-    # Reset state
-    _training_state["status"] = "training"
-    _training_state["progress"] = "Initializing..."
-    _training_state["started_at"] = time.time()
-    _training_state["result"] = None
-    _training_state["error"] = None
-    _training_state["completed_at"] = None
 
     async def _train_background():
         try:
             await asyncio.to_thread(_run_training)
         except Exception as e:
             logger.error(f"Recession model training error: {e}", exc_info=True)
-            _training_state["status"] = "failed"
-            _training_state["error"] = str(e)
-            _training_state["completed_at"] = time.time()
+            _ts.mark_failed(str(e))
 
     asyncio.create_task(_train_background())
 
@@ -563,19 +540,21 @@ async def get_training_status():
     """Poll training progress."""
     import time
 
+    snap = _ts.snapshot()
     response = {
-        "status": _training_state["status"],
-        "progress": _training_state["progress"],
+        "status": snap["status"],
+        "progress": snap["progress"],
+        "owner": snap.get("owner"),
     }
 
-    if _training_state["started_at"]:
-        elapsed = ((_training_state.get("completed_at") or time.time()) - _training_state["started_at"])
+    if snap["started_at"]:
+        elapsed = ((snap.get("completed_at") or time.time()) - snap["started_at"])
         response["elapsed_seconds"] = round(elapsed, 1)
 
-    if _training_state["status"] == "completed":
-        response["result"] = _training_state["result"]
+    if snap["status"] == "completed":
+        response["result"] = snap["result"]
 
-    if _training_state["status"] == "failed":
-        response["error"] = _training_state["error"]
+    if snap["status"] == "failed":
+        response["error"] = snap["error"]
 
     return response

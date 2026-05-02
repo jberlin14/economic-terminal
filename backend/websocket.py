@@ -149,6 +149,22 @@ async def broadcast_yield_update(yield_data: Dict[str, Any]):
     })
 
 
+async def broadcast_credit_update(credit_data: Dict[str, Any]):
+    """Broadcast credit spread update to all clients.
+
+    Pairs with `update_credit_spreads()` in scheduler.py — without this
+    function the scheduler's import raised ImportError and every
+    credit-spread refresh failed silently behind the surrounding
+    try/except, leaving the dashboard's credit panel updated only by
+    the 5-minute polling fallback.
+    """
+    await manager.broadcast({
+        'type': 'credit_update',
+        'data': credit_data,
+        'timestamp': get_current_time().isoformat()
+    })
+
+
 async def broadcast_alert(alert_data: Dict[str, Any]):
     """Broadcast risk alert to all clients."""
     await manager.broadcast({
