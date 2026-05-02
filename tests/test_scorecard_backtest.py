@@ -92,3 +92,64 @@ def test_backtest_handles_missing_composite_gracefully():
 
     result = backtest_composite_cutoff(db, cutoffs=(67.0,), nber_dates=nber)
     assert result["n_snapshots"] == 1  # only the valid entry counted
+
+
+# ──────────────────────────────────────────────
+# _load_nber_dates against a real DB session
+# ──────────────────────────────────────────────
+
+def test_load_nber_dates_returns_usrec_positive_dates(tmp_path, monkeypatch):
+    """Regression for pass-4 finding: _load_nber_dates queried a non-existent
+    `IndicatorValue.indicator_id` column, silently returning [] even when
+    USREC was populated. This exercises the fixed series_id-based query
+    path against a real SQLite session."""
+    db_path = tmp_path / "nber.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    import importlib
+    from modules.data_storage import database as db_mod
+    importlib.reload(db_mod)
+    from modules.data_storage import schema  # noqa: F401
+    db_mod.init_db()
+
+    from modules.data_storage.schema import EconomicIndicator, IndicatorValue
+    session = db_mod.SessionLocal()
+    try:
+        ind = EconomicIndicator(
+            series_id="USREC",
+            name="USREC",
+            report_group="Recession",
+            units="binary",
+            frequency="monthly",
+        )
+        session.add(ind)
+        session.commit()
+        for d, v in [
+            (date(2008, 12, 1), 1.0),
+            (date(2009, 1, 1), 1.0),
+            (date(2010, 1, 1), 0.0),  # not a recession month
+        ]:
+            session.add(IndicatorValue(series_id="USREC", date=d, value=v))
+        session.commit()
+
+        from modules.risk_scorecard.backtest import _load_nber_dates
+        nber = _load_nber_dates(session)
+        assert sorted(nber) == [date(2008, 12, 1), date(2009, 1, 1)]
+    finally:
+        session.close()
+
+
+def test_load_nber_dates_empty_when_no_usrec_rows(tmp_path, monkeypatch):
+    db_path = tmp_path / "nber_empty.db"
+    monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_path}")
+    import importlib
+    from modules.data_storage import database as db_mod
+    importlib.reload(db_mod)
+    from modules.data_storage import schema  # noqa: F401
+    db_mod.init_db()
+
+    session = db_mod.SessionLocal()
+    try:
+        from modules.risk_scorecard.backtest import _load_nber_dates
+        assert _load_nber_dates(session) == []
+    finally:
+        session.close()

@@ -149,17 +149,20 @@ def backtest_composite_cutoff(
 
 
 def _load_nber_dates(db: Session) -> List[date]:
-    """Best-effort: pull USREC=1 dates from indicator_values if present."""
-    try:
-        from modules.data_storage.schema import IndicatorValue, EconomicIndicator
+    """Best-effort: pull USREC=1 dates from indicator_values if present.
 
-        usrec = db.query(EconomicIndicator).filter(
-            EconomicIndicator.series_id == "USREC"
-        ).first()
-        if not usrec:
-            return []
+    `IndicatorValue` is keyed by `series_id` directly (not by a foreign
+    key into `economic_indicators.id`) — see schema.py. The earlier
+    version queried a non-existent `indicator_id` column, which raised
+    AttributeError, was swallowed by the surrounding try/except, and
+    silently returned an empty list — disabling NBER-based backtest
+    scoring even when USREC was populated.
+    """
+    try:
+        from modules.data_storage.schema import IndicatorValue
+
         rows = db.query(IndicatorValue).filter(
-            IndicatorValue.indicator_id == usrec.id,
+            IndicatorValue.series_id == "USREC",
             IndicatorValue.value == 1.0,
         ).all()
         return [r.date for r in rows if r.date is not None]

@@ -172,9 +172,13 @@ def _ensure_column(
                 conn.execute(text(f"ALTER TABLE {table} ADD COLUMN {column} {sqlite_type}"))
                 logger.info(f"  + Added column {table}.{column} ({sqlite_type})")
             else:
+                # Filter on table_schema='public' so a same-named column
+                # in another schema (multi-tenant Render/Neon setups)
+                # doesn't short-circuit the add on the public table.
                 check = text(
                     "SELECT 1 FROM information_schema.columns "
-                    "WHERE table_name = :t AND column_name = :c"
+                    "WHERE table_schema = 'public' "
+                    "AND table_name = :t AND column_name = :c"
                 )
                 if conn.execute(check, {"t": table, "c": column}).fetchone():
                     return
@@ -197,13 +201,19 @@ def _ensure_unique_index(
     a unique index as semantically equivalent to a unique constraint
     for IntegrityError dedup behavior.
 
+    Postgres: uses CREATE UNIQUE INDEX CONCURRENTLY so a hot deploy on a
+    busy table (e.g. `risk_alerts` written every 5 min by the scorecard)
+    doesn't block reads/writes for the duration of the build. CONCURRENTLY
+    cannot run inside a transaction, so the Postgres branch uses
+    `engine.connect()` in autocommit mode rather than `engine.begin()`.
+
     Idempotent: skips when an index of `index_name` already exists.
     Will fail with a clear log if pre-existing duplicate values block
     the index creation; in that case clean up duplicates manually first.
     """
     try:
-        with engine.begin() as conn:
-            if IS_SQLITE:
+        if IS_SQLITE:
+            with engine.begin() as conn:
                 rows = conn.execute(
                     text("SELECT name FROM sqlite_master WHERE type='index' AND name=:n"),
                     {"n": index_name},
@@ -214,17 +224,29 @@ def _ensure_unique_index(
                     text(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}({column})")
                 )
                 logger.info(f"  + Added unique index {index_name} on {table}.{column}")
-            else:
+        else:
+            # Postgres: idempotency check + autocommit-mode CONCURRENTLY build.
+            with engine.connect() as conn:
                 check = text(
                     "SELECT 1 FROM pg_indexes "
-                    "WHERE tablename = :t AND indexname = :n"
+                    "WHERE schemaname = 'public' "
+                    "AND tablename = :t AND indexname = :n"
                 )
                 if conn.execute(check, {"t": table, "n": index_name}).fetchone():
                     return
+                # Switch to autocommit isolation so CONCURRENTLY can run
+                # outside a transaction (Postgres requirement).
+                conn = conn.execution_options(isolation_level="AUTOCOMMIT")
                 conn.execute(
-                    text(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}({column})")
+                    text(
+                        f"CREATE UNIQUE INDEX CONCURRENTLY IF NOT EXISTS "
+                        f"{index_name} ON {table}({column})"
+                    )
                 )
-                logger.info(f"  + Added unique index {index_name} on {table}.{column}")
+                logger.info(
+                    f"  + Added unique index {index_name} on {table}.{column} "
+                    f"(CONCURRENTLY)"
+                )
     except Exception as e:
         logger.warning(
             f"  Could not ensure unique index {index_name} on {table}.{column}: {e}"
