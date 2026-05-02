@@ -169,6 +169,43 @@ def test_sahm_trigger_emits_when_crossing_up(db_session):
     assert alerts[0].severity == "CRITICAL"
 
 
+def test_evaluate_scorecard_alerts_extracts_sahm_from_pillar_components(db_session):
+    """End-to-end: build a scorecard payload with a Sahm Rule component
+    and verify evaluate_scorecard_alerts correctly parses the value and
+    fires the trigger. Regression for the brittle string-match extraction
+    in the orchestrator (debug-review VG-3)."""
+    from modules.risk_scorecard.alerts import evaluate_scorecard_alerts
+    from modules.data_storage.schema import RiskAlert
+
+    yesterday = date.today() - timedelta(days=1)
+    _seed_journal(db_session, yesterday, composite=50.0, sahm=0.40)
+
+    scorecard_result = {
+        "composite_score": 55.0,  # still yellow → no band crossing
+        "pillars": [
+            {
+                "id": "labor",
+                "name": "Labor Market",
+                "components": [
+                    {"label": "Sahm Rule", "value": "0.55", "status": "triggered"},
+                    {"label": "Unemployment", "value": "4.5%", "status": "moderate"},
+                ],
+            }
+        ],
+    }
+
+    fired = evaluate_scorecard_alerts(db_session, scorecard_result)
+    sahm_fires = [f for f in fired if f.get("kind") == "sahm"]
+    assert len(sahm_fires) == 1
+    assert sahm_fires[0]["direction"] == "up"
+
+    alerts = db_session.query(RiskAlert).filter(
+        RiskAlert.related_entity == "labor.sahm_rule"
+    ).all()
+    assert len(alerts) == 1
+    assert alerts[0].related_value == 0.55
+
+
 def test_sahm_trigger_no_alert_when_steady_below(db_session):
     from modules.risk_scorecard.alerts import check_sahm_trigger
     from modules.data_storage.schema import RiskAlert

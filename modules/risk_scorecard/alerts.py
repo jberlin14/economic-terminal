@@ -72,7 +72,17 @@ def _emit(
     today: Optional[date] = None,
     key_suffix: Optional[str] = None,
 ) -> Optional[int]:
-    """Insert a new alert if no same-day duplicate exists. Returns id or None."""
+    """Insert a new alert if no same-day duplicate exists. Returns id or None.
+
+    Dedup check runs against the caller's session (so we see uncommitted
+    upstream writes), but the alert insert itself uses a dedicated
+    `SessionLocal()` session. Coupling a side-effect commit to the
+    request-scoped session would publish any unrelated dirty state on
+    that session — same isolation the scorecard's `_persist_pillar_scores`
+    applies for its journal write.
+    """
+    from modules.data_storage.database import SessionLocal
+
     today = today or date.today()
     h = _alert_hash(alert_type, related_entity, today, key_suffix)
     if _existing_alert(db, h):
@@ -91,9 +101,17 @@ def _emit(
         alert_hash=h,
         is_active=True,
     )
-    db.add(alert)
-    db.commit()
-    return alert.id
+    write_db = SessionLocal()
+    try:
+        write_db.add(alert)
+        write_db.commit()
+        write_db.refresh(alert)
+        return alert.id
+    except Exception:
+        write_db.rollback()
+        raise
+    finally:
+        write_db.close()
 
 
 def check_composite_band_crossing(
