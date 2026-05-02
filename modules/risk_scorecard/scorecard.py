@@ -1179,34 +1179,24 @@ class RiskScorecard:
                     continue
 
                 # Fallback: legacy reconstruction from indicator_snapshot.
-                snapshot = entry.indicator_snapshot or {}
-                derived = snapshot.get("derived", {})
+                # Shared with the offline backfill script so the formula
+                # stays in lockstep across surfaces.
+                from .backfill import reconstruct_compact_from_indicator_snapshot
 
-                day_scores = {"date": entry.date.isoformat()}
-
-                cpi_yoy = derived.get("cpi_yoy")
-                day_scores["inflation"] = round(_linear_scale(cpi_yoy, 1.5, 6.0), 1) if cpi_yoy else None
-
-                sahm = derived.get("sahm_rule")
-                day_scores["labor"] = round(_linear_scale(sahm, 0, 0.8), 1) if sahm else None
-
-                spread = snapshot.get("spreads", {}).get("10y2y")
-                day_scores["yield_curve"] = round(_linear_scale(-spread, -2.0, 1.0), 1) if spread is not None else None
-
-                stress = snapshot.get("credit_stress", "NORMAL")
-                day_scores["credit"] = {"NORMAL": 15, "ELEVATED": 55, "HIGH": 85}.get(stress, 40)
-
-                day_scores["volatility"] = None
-                day_scores["geopolitical"] = None
-
-                available = {k: v for k, v in day_scores.items() if k != "date" and v is not None}
-                if available:
-                    weights = {k: PILLAR_WEIGHTS.get(k, 0.15) for k in available}
-                    total_w = sum(weights.values())
-                    day_scores["composite"] = round(
-                        sum(available[k] * weights[k] for k in available) / total_w, 1
-                    )
+                compact = reconstruct_compact_from_indicator_snapshot(entry.indicator_snapshot)
+                day_scores: Dict[str, Any] = {"date": entry.date.isoformat()}
+                if compact:
+                    for pid in PILLAR_WEIGHTS:
+                        p = (compact.get("pillars") or {}).get(pid)
+                        day_scores[pid] = (
+                            round(float(p["score"]), 1)
+                            if isinstance(p, dict) and p.get("score") is not None
+                            else None
+                        )
+                    day_scores["composite"] = compact.get("composite", 50)
                 else:
+                    for pid in PILLAR_WEIGHTS:
+                        day_scores[pid] = None
                     day_scores["composite"] = 50
 
                 sparkline_data.append(day_scores)
