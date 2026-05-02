@@ -215,6 +215,37 @@ def test_backfill_dry_run_does_not_commit(db_session):
     assert entry.pillar_scores_snapshot is None
 
 
+def test_backfill_dry_run_through_get_db_context_does_not_persist(db_session, monkeypatch):
+    """End-to-end via get_db_context's auto-commit: dry-run dirties the
+    session, the context manager would commit on clean exit, and the
+    rollback in backfill_pillar_scores_snapshot must defeat that."""
+    from modules.risk_scorecard.backfill import backfill_pillar_scores_snapshot
+    from modules.data_storage import database as db_mod
+    from modules.data_storage.schema import AIMarketJournal
+
+    today = date.today()
+    _seed_journal(
+        db_session,
+        today - timedelta(days=1),
+        indicator_snapshot={"derived": {"cpi_yoy": 3.0}},
+    )
+    db_session.close()
+
+    # Now call through get_db_context — exits cleanly, would auto-commit.
+    with db_mod.get_db_context() as ctx_db:
+        report = backfill_pillar_scores_snapshot(ctx_db, dry_run=True)
+        assert report["filled"] == 1
+        assert report["committed"] is False
+
+    # Re-open session and verify nothing was committed.
+    fresh = db_mod.SessionLocal()
+    try:
+        entry = fresh.query(AIMarketJournal).first()
+        assert entry.pillar_scores_snapshot is None
+    finally:
+        fresh.close()
+
+
 def test_backfill_skips_no_data_entries(db_session):
     from modules.risk_scorecard.backfill import backfill_pillar_scores_snapshot
 

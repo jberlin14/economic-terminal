@@ -1175,10 +1175,19 @@ class RiskScorecard:
                     if composite is not None:
                         day_scores["composite"] = round(float(composite), 1)
                     else:
-                        # Derive from stored pillars on the fly.
-                        avail = {k: v for k, v in day_scores.items() if k != "date" and v is not None}
+                        # Derive from stored pillars on the fly. Only
+                        # known PILLAR_WEIGHTS keys participate — a
+                        # snapshot written by an older code version with
+                        # different pillar ids would have those ids
+                        # ignored rather than weighted at a fabricated
+                        # 0.15 default (debug-review C-4).
+                        avail = {
+                            k: v
+                            for k, v in day_scores.items()
+                            if k != "date" and v is not None and k in PILLAR_WEIGHTS
+                        }
                         if avail:
-                            weights = {k: PILLAR_WEIGHTS.get(k, 0.15) for k in avail}
+                            weights = {k: PILLAR_WEIGHTS[k] for k in avail}
                             total_w = sum(weights.values())
                             day_scores["composite"] = round(
                                 sum(avail[k] * weights[k] for k in avail) / total_w, 1
