@@ -143,11 +143,19 @@ class RecessionPredictor:
         }
 
     def _top_features_by_importance(self, limit: int = 20) -> list:
-        """Pull the top-K feature names from the random-forest importance
-        list at the 6m horizon (the canonical horizon for the page banner).
-        Falls back to logistic coefficients, then to all features."""
+        """Pull the top-K feature names at the 6m horizon for the drift report.
+
+        Logistic is preferred so the drift report describes the same feature
+        set the per-prediction explanation surface (`explain_prediction`,
+        Phase 4.1) draws from — both rendered side-by-side on the recession
+        page. Mixing scales (RF importances vs. logistic coefficients)
+        produced a confusing drift→explanation handoff for the user.
+
+        Falls back to RF / GBM importances, then to the model's full
+        feature list, when logistic metadata is unavailable.
+        """
         metrics_6m = (self.model.metrics or {}).get(6, {})
-        for mt in ("random_forest", "gradient_boosting", "logistic"):
+        for mt in ("logistic", "random_forest", "gradient_boosting"):
             entry = metrics_6m.get(mt) or {}
             fi = entry.get("feature_importance")
             if isinstance(fi, list) and fi:
