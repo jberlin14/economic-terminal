@@ -131,6 +131,16 @@ def init_db() -> None:
             sqlite_type="JSON",
             postgres_type="JSON",
         )
+        # Promote the existing alert_hash index to UNIQUE (third-pass debug
+        # review). Closes the race window in alerts._emit between dedup
+        # check and insert: concurrent writers can no longer commit two
+        # rows with the same alert_hash; the second writer's IntegrityError
+        # is caught as "dedup-resolved by the constraint" in _emit.
+        _ensure_unique_index(
+            table="risk_alerts",
+            column="alert_hash",
+            index_name="ux_risk_alerts_alert_hash",
+        )
 
     except Exception as e:
         logger.error(f"Failed to initialize database: {e}")
@@ -173,6 +183,52 @@ def _ensure_column(
     except Exception as e:
         # Don't crash startup on a migration that can't run — log and continue.
         logger.warning(f"  Could not ensure column {table}.{column}: {e}")
+
+
+def _ensure_unique_index(
+    table: str,
+    column: str,
+    index_name: str,
+) -> None:
+    """Promote an indexed column to a UNIQUE index in-place.
+
+    SQLite: ALTER TABLE doesn't support adding UNIQUE constraints to
+    existing columns, so we use CREATE UNIQUE INDEX. Both engines treat
+    a unique index as semantically equivalent to a unique constraint
+    for IntegrityError dedup behavior.
+
+    Idempotent: skips when an index of `index_name` already exists.
+    Will fail with a clear log if pre-existing duplicate values block
+    the index creation; in that case clean up duplicates manually first.
+    """
+    try:
+        with engine.begin() as conn:
+            if IS_SQLITE:
+                rows = conn.execute(
+                    text("SELECT name FROM sqlite_master WHERE type='index' AND name=:n"),
+                    {"n": index_name},
+                ).fetchall()
+                if rows:
+                    return
+                conn.execute(
+                    text(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}({column})")
+                )
+                logger.info(f"  + Added unique index {index_name} on {table}.{column}")
+            else:
+                check = text(
+                    "SELECT 1 FROM pg_indexes "
+                    "WHERE tablename = :t AND indexname = :n"
+                )
+                if conn.execute(check, {"t": table, "n": index_name}).fetchone():
+                    return
+                conn.execute(
+                    text(f"CREATE UNIQUE INDEX IF NOT EXISTS {index_name} ON {table}({column})")
+                )
+                logger.info(f"  + Added unique index {index_name} on {table}.{column}")
+    except Exception as e:
+        logger.warning(
+            f"  Could not ensure unique index {index_name} on {table}.{column}: {e}"
+        )
 
 
 def drop_all_tables() -> None:

@@ -145,6 +145,17 @@ def compute_training_quantiles(
 
     Persisted on the model at train time so live prediction can score drift
     without re-pulling the full training set.
+
+    Limitation: features that take only two values across the training
+    window (the `_avail` indicators introduced in commit 0b8bbdc are 0/1)
+    yield q01=0 and q99=1, so live values of 0 or 1 never trip
+    `out_of_bounds` in compute_feature_drift. The drift signal is
+    therefore insensitive to a live FRED outage that flips a `_avail`
+    feature from 1 to 0 — which is the right behavior for the
+    `_avail` indicators themselves (they are inherently binary, not
+    "drifted") but worth noting if drift sensitivity is unexpectedly low.
+    The accompanying `LATE_STARTING_SERIES` warning in data_builder.py's
+    live path provides the missing observability for outages.
     """
     out: Dict[str, Dict[str, float]] = {}
     for f in feature_names:

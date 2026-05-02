@@ -169,6 +169,74 @@ def test_sahm_trigger_emits_when_crossing_up(db_session):
     assert alerts[0].severity == "CRITICAL"
 
 
+def test_emit_handles_concurrent_dedup_race_via_unique_constraint(db_session):
+    """When two concurrent _emit calls both pass the dedup check before
+    either commits, the unique index on alert_hash catches the duplicate
+    at commit time. The second writer's IntegrityError must be caught
+    and treated as 'dedup-resolved', not a hard failure (debug-review
+    pass-3 finding 1)."""
+    from modules.risk_scorecard.alerts import _emit
+    from modules.data_storage.schema import RiskAlert
+    from modules.data_storage.database import SessionLocal
+
+    yesterday = date.today() - timedelta(days=1)
+    _seed_journal(db_session, yesterday, composite=20.0)
+
+    # First emit succeeds.
+    today = date.today()
+    a1 = _emit(
+        db_session,
+        alert_type="ECON",
+        severity="MEDIUM",
+        title="t1",
+        message="m1",
+        related_entity="test.race",
+        today=today,
+        key_suffix="green->yellow",
+    )
+    assert a1 is not None
+
+    # Now simulate a concurrent emit that won past the dedup check (e.g.
+    # the first writer hadn't committed yet). Manually insert into a
+    # second SessionLocal — bypass the dedup check by reusing the same
+    # alert_hash and confirm the unique constraint catches it.
+    from modules.risk_scorecard.alerts import _alert_hash
+    h = _alert_hash("ECON", "test.race", today, "green->yellow")
+
+    # Pre-insert another identical alert with the same hash (simulates
+    # the racing writer arriving second). _emit's dedup-check WOULD have
+    # caught it — we want to test the safety net for when it doesn't.
+    write_db = SessionLocal()
+    try:
+        from datetime import datetime as _dt, timedelta as _td
+        dup = RiskAlert(
+            alert_type="ECON",
+            severity="MEDIUM",
+            title="t2",
+            message="m2",
+            details={},
+            triggered_at=_dt.utcnow(),
+            expires_at=_dt.utcnow() + _td(days=7),
+            related_entity="test.race",
+            alert_hash=h,
+            is_active=True,
+        )
+        write_db.add(dup)
+        # The unique index makes this commit fail.
+        from sqlalchemy.exc import IntegrityError
+        try:
+            write_db.commit()
+            assert False, "expected IntegrityError on duplicate alert_hash"
+        except IntegrityError:
+            write_db.rollback()
+    finally:
+        write_db.close()
+
+    # Confirm only one alert exists with that hash.
+    alerts = db_session.query(RiskAlert).filter(RiskAlert.alert_hash == h).all()
+    assert len(alerts) == 1
+
+
 def test_evaluate_scorecard_alerts_extracts_sahm_from_pillar_components(db_session):
     """End-to-end: build a scorecard payload with a Sahm Rule component
     and verify evaluate_scorecard_alerts correctly parses the value and

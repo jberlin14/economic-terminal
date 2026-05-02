@@ -349,8 +349,11 @@ class RiskAlert(Base):
     acknowledged = Column(Boolean, default=False)
     acknowledged_at = Column(DateTime)
     
-    # Deduplication
-    alert_hash = Column(String(64), index=True)
+    # Deduplication. UNIQUE so that a race between the `_existing_alert`
+    # check and the insert in alerts._emit can never produce a silent
+    # duplicate; the second writer raises IntegrityError, which _emit
+    # treats as "dedup-resolved, no-op" rather than a real failure.
+    alert_hash = Column(String(64), unique=True, index=True)
     
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)

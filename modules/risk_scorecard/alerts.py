@@ -101,12 +101,24 @@ def _emit(
         alert_hash=h,
         is_active=True,
     )
+    from sqlalchemy.exc import IntegrityError
+
     write_db = SessionLocal()
     try:
         write_db.add(alert)
         write_db.commit()
         write_db.refresh(alert)
         return alert.id
+    except IntegrityError:
+        # Concurrent emit raced past the dedup check and the unique index
+        # caught the duplicate at commit time. The other writer won;
+        # treat as a clean dedup, not a failure.
+        write_db.rollback()
+        logger.debug(
+            f"Alert dedup race resolved by unique index ({alert_type}|"
+            f"{related_entity}|{key_suffix or ''})"
+        )
+        return None
     except Exception:
         write_db.rollback()
         raise

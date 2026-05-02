@@ -29,6 +29,17 @@ _context_cache: Dict[str, Any] = {"data": None, "timestamp": 0.0}
 # old context's id, a fresh dict could land at the same address, and
 # stale analytics would be served. Now: at most one entry, always
 # matching the currently-cached context.
+#
+# Concurrency note: this cache is not lock-protected. Under uvicorn's
+# default async worker model (single thread, cooperative scheduling),
+# `compute_analytics` runs to completion without interleaving — the
+# slot is consistent. Multi-process deployments (`--workers > 1`) get
+# per-process caches and no cross-process race exists. Only a threaded
+# WSGI deployment (e.g. gunicorn threaded workers) could observe
+# overlapping `compute_analytics` calls; in that mode two writers may
+# both compute the same context and the later writer's result wins,
+# which is harmless (they computed the same input). Add a `threading.
+# Lock` if the deployment changes to threaded workers.
 _analytics_cache: Dict[str, Any] = {"context_id": None, "data": None}
 _CACHE_TTL_SECONDS = 60
 
