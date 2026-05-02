@@ -125,6 +125,7 @@ interface ExplanationEntry {
 }
 interface PerHorizonExplanation {
   model_used?: string;
+  ensemble_weight?: number;
   logit?: number;
   intercept?: number;
   top_pushing_up?: ExplanationEntry[];
@@ -1228,6 +1229,16 @@ const ExplanationPanel: React.FC<{
             {payload.n_active_features} L1-active features at this horizon. Each row is
             <span className="text-terminal-text mx-1">coef × scaled_value</span>
             — the additive contribution to the logit. Positive = pushing recession probability UP.
+            {payload.ensemble_weight !== undefined && payload.ensemble_weight > 0 && (
+              <span className="block mt-1 text-amber-400/80">
+                Note: this view is logistic-only. Logistic carries
+                <span className="text-amber-400 font-medium mx-1">
+                  {(payload.ensemble_weight * 100).toFixed(0)}%
+                </span>
+                of the published ensemble probability — the other heads (RF, GBM, XGBoost)
+                are not decomposed here.
+              </span>
+            )}
           </div>
 
           <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

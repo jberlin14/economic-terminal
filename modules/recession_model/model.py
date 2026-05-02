@@ -474,12 +474,20 @@ class RecessionModel:
           {
             "<horizon>m": {
               "model_used": "logistic",
+              "ensemble_weight": float,   # logistic's AUC-weighted share
+                                          # of the published ensemble (0..1)
               "logit": float,
               "intercept": float,
               "top_pushing_up":   [{feature, value, scaled_value, coefficient, contribution}, ...],
               "top_pulling_down": [{feature, value, scaled_value, coefficient, contribution}, ...],
             }
           }
+        `ensemble_weight` lets the UI show the user what fraction of the
+        published probability the explanation actually accounts for —
+        otherwise a logistic-only explanation reads as "this is why the
+        prob is X" when in reality logistic only contributes ~25% of the
+        ensemble at training time.
+
         Returns empty dict if the model isn't trained or logistic isn't
         present (e.g. legacy single-model artifact).
         """
@@ -518,8 +526,12 @@ class RecessionModel:
             entries_pos.sort(key=lambda e: -e["contribution"])
             entries_neg.sort(key=lambda e: e["contribution"])
 
+            ensemble_weight = float(
+                (self.ensemble_weights.get(horizon, {}) or {}).get("logistic", 0.0)
+            )
             out[f"{horizon}m"] = {
                 "model_used": "logistic",
+                "ensemble_weight": round(ensemble_weight, 4),
                 "logit": round(float(np.sum(contributions) + intercept), 4),
                 "intercept": round(intercept, 4),
                 "top_pushing_up": entries_pos[:top_k],
