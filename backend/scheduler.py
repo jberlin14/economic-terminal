@@ -131,7 +131,7 @@ async def update_credit_spreads():
     try:
         from modules.credit_monitor.data_fetcher import CreditDataFetcher
         from modules.credit_monitor.storage import store_credit_update
-        from backend.websocket import broadcast_yield_update
+        from backend.websocket import broadcast_credit_update
 
         # Fetch spreads
         fetcher = CreditDataFetcher()
@@ -142,8 +142,7 @@ async def update_credit_spreads():
             store_credit_update(update)
 
             # Broadcast update to WebSocket clients
-            await broadcast_yield_update({
-                'type': 'credit_spreads',
+            await broadcast_credit_update({
                 'spreads': [json.loads(s.json()) for s in update.spreads],
                 'timestamp': update.timestamp.isoformat()
             })
@@ -205,7 +204,7 @@ async def scrape_article_texts():
     try:
         from modules.news_aggregator.article_scraper import scrape_missing_articles
 
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
         counts = await loop.run_in_executor(None, scrape_missing_articles)
 
         if counts['scraped'] > 0:
@@ -238,10 +237,8 @@ async def check_alerts():
             if critical:
                 logger.warning(f"Found {len(critical)} unsent CRITICAL alerts")
                 # TODO: Send immediate email via email_reporter module
-                
-                # Mark as sent
-                alert_ids = [a.id for a in critical]
-                manager.mark_email_sent(alert_ids)
+                # Alerts are NOT marked as sent until email sending is implemented,
+                # so they will continue to appear in unsent queries.
             
             # Expire old alerts
             manager.expire_old_alerts(hours=24)
@@ -323,6 +320,12 @@ async def update_indicators():
         traceback.print_exc()
 
 
+async def update_market_indices():
+    """Fetch and store latest market indices (VIX, oil, gold, S&P 500)."""
+    from modules.market_indices import update_market_indices as _update
+    await _update()
+
+
 async def generate_daily_journal():
     """Generate the daily AI market journal entry with pre-computed analytics."""
     logger.info("Scheduled: Generating daily market journal...")
@@ -380,6 +383,96 @@ async def cleanup_old_data():
         logger.error(f"Cleanup failed: {e}")
 
 
+async def retrain_recession_model():
+    """
+    Phase 4.5: scheduled monthly retraining of the recession ensemble.
+
+    Runs in a thread so the async scheduler stays responsive. Logs but
+    doesn't crash on failure — model artifacts on disk continue to serve
+    predictions until the next successful retrain.
+
+    Coordinates with the UI `/recession/train` endpoint via the shared
+    `training_state` module so that a UI-triggered train and a scheduled
+    retrain cannot run concurrently. Concurrent trains would interleave
+    their writes to the same artifact files (per-file atomic save in
+    persistence.py prevents partial reads of a single file but does NOT
+    prevent a logistic_6m artifact from train A landing alongside an
+    rf_6m artifact from train B).
+    """
+    logger.info("Scheduled: Retraining recession model (monthly)...")
+    from modules.recession_model import training_state as _ts
+
+    if not _ts.acquire(owner="scheduler", progress="Scheduled monthly retrain"):
+        snap = _ts.snapshot()
+        logger.warning(
+            "Skipping monthly retrain: training already in progress "
+            f"(owner={snap.get('owner')}, started_at={snap.get('started_at')})"
+        )
+        return
+
+    try:
+        from modules.recession_model import RecessionModel
+
+        def _train():
+            model = RecessionModel()
+            return model.train()
+
+        result = await asyncio.to_thread(_train)
+        _ts.mark_completed(result)
+        logger.success(
+            "Monthly recession retrain complete: "
+            f"trained_at={result.get('metadata', {}).get('trained_at')}"
+        )
+    except Exception as e:
+        _ts.mark_failed(str(e))
+        logger.error(f"Monthly recession retrain failed: {e}")
+        import traceback
+        traceback.print_exc()
+
+
+async def check_drift_and_retrain():
+    """
+    Phase 4.5: drift-triggered retrain. Runs daily and only kicks off a
+    full retrain if the live drift score has been at 'alert' level for
+    multiple consecutive days. Avoids retraining on transient noise.
+    """
+    logger.info("Scheduled: Checking recession-model drift...")
+    try:
+        from modules.recession_model.predictor import RecessionPredictor
+        from modules.data_storage.database import get_db_context
+
+        with get_db_context() as db:
+            predictor = RecessionPredictor(db)
+            current = predictor.get_current_probability()
+            drift = (current or {}).get("drift") if isinstance(current, dict) else None
+            if not drift:
+                return
+            if drift.get("level") != "alert":
+                return
+
+            # Avoid runaway: only retrain at most once every 7 days even if
+            # drift remains in alert. We check the latest model metadata
+            # `trained_at` from the on-disk artifacts.
+            from modules.recession_model import RecessionModel
+            model = RecessionModel()
+            if model.load() and model.training_metadata.get("trained_at"):
+                from datetime import datetime as _dt, timedelta as _td
+                trained_at = _dt.fromisoformat(model.training_metadata["trained_at"])
+                if _dt.utcnow() - trained_at < _td(days=7):
+                    logger.info(
+                        "Drift in alert but model retrained <7d ago — skipping retrain"
+                    )
+                    return
+
+        logger.warning(
+            f"Drift level=alert (score={drift.get('drift_score')}, "
+            f"oob={drift.get('n_out_of_bounds')}); kicking off retrain."
+        )
+        await retrain_recession_model()
+    except Exception as e:
+        logger.error(f"Drift check / retrain failed: {e}")
+
+
 def start_scheduler():
     """Start the background scheduler with all jobs."""
     
@@ -398,6 +491,15 @@ def start_scheduler():
         IntervalTrigger(minutes=5),
         id='yield_update',
         name='Yield Curve Update',
+        replace_existing=True
+    )
+
+    # Market indices (VIX, oil, gold, S&P 500) - every 5 minutes
+    scheduler.add_job(
+        update_market_indices,
+        IntervalTrigger(minutes=5),
+        id='market_index_update',
+        name='Market Index Update',
         replace_existing=True
     )
 
@@ -437,10 +539,10 @@ def start_scheduler():
         replace_existing=True
     )
     
-    # Daily market journal - 7:00 AM ET (before market open)
+    # Daily market journal - 7:00 AM ET every day (including weekends for continuous timeline)
     scheduler.add_job(
         generate_daily_journal,
-        CronTrigger(hour=7, minute=0, day_of_week='mon-fri', timezone='America/New_York'),
+        CronTrigger(hour=7, minute=0, timezone='America/New_York'),
         id='daily_journal',
         name='Daily Market Journal',
         replace_existing=True
@@ -470,6 +572,26 @@ def start_scheduler():
         CronTrigger(hour=3, minute=0, timezone='America/New_York'),
         id='data_cleanup',
         name='Data Cleanup',
+        replace_existing=True
+    )
+
+    # Phase 4.5: monthly retrain of the recession model — first day of
+    # each month at 4 AM ET (well after data cleanup, before market open).
+    scheduler.add_job(
+        retrain_recession_model,
+        CronTrigger(day=1, hour=4, minute=0, timezone='America/New_York'),
+        id='recession_monthly_retrain',
+        name='Recession Model Monthly Retrain',
+        replace_existing=True
+    )
+
+    # Phase 4.5: daily drift check — kicks off a retrain only if drift
+    # is at 'alert' level AND the previous retrain was >= 7 days ago.
+    scheduler.add_job(
+        check_drift_and_retrain,
+        CronTrigger(hour=4, minute=30, timezone='America/New_York'),
+        id='recession_drift_check',
+        name='Recession Model Drift Check',
         replace_existing=True
     )
 

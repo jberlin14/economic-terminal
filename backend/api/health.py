@@ -88,9 +88,15 @@ async def module_health(db: Session = Depends(get_db)):
 
 
 async def _run_refresh_all():
-    """Background task to refresh all data sources."""
+    """Background task to refresh all data sources.
+
+    Caller (`refresh_all_data`) MUST set `_refresh_status["running"] = True`
+    synchronously before scheduling this task; the early-set defeats the
+    TOCTOU window where two near-simultaneous POSTs both pass the
+    `if _refresh_status["running"]` guard before the background task
+    has had a chance to start.
+    """
     global _refresh_status
-    _refresh_status["running"] = True
     _refresh_status["results"] = {}
 
     from backend.scheduler import (
@@ -147,7 +153,14 @@ async def refresh_all_data(background_tasks: BackgroundTasks):
             "timestamp": get_current_time().isoformat()
         }
 
-    # Start refresh in background
+    # Set the flag SYNCHRONOUSLY before scheduling the background task.
+    # FastAPI's BackgroundTasks.add_task only schedules — the coroutine
+    # runs after the response is sent. Setting `running=True` inside
+    # `_run_refresh_all` itself leaves a window where a second concurrent
+    # POST passes the guard and double-fires every downstream fetch
+    # (FRED, credit, news…). Single-threaded asyncio guarantees the
+    # check-and-set is atomic from the event-loop's perspective.
+    _refresh_status["running"] = True
     background_tasks.add_task(_run_refresh_all)
 
     return {

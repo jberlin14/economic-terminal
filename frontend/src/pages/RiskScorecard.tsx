@@ -1,9 +1,11 @@
 import React, { useEffect, useState, useCallback } from 'react';
 import {
   Shield, TrendingUp, TrendingDown, Minus, RefreshCw, AlertCircle,
-  Flame, Users, GitBranch, BarChart3, Activity, Globe, Info, ChevronDown,
+  Flame, Users, GitBranch, BarChart3, Activity, Globe, Home, Brain,
+  Info, ChevronDown,
 } from 'lucide-react';
 import { LineChart, Line, ResponsiveContainer } from 'recharts';
+import { RecessionProbabilityCard } from '../components/RecessionProbabilityCard';
 
 const API_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
 
@@ -26,6 +28,25 @@ interface Pillar {
   components: PillarComponent[];
   sparkline: (number | null)[];
   data_freshness: string | null;
+  // Phase 3.6 / 3.7
+  deltas?: { d1: number | null; w1: number | null; m1: number | null };
+  freshness?: { age_days: number | null; level: string; label: string };
+}
+
+interface RecessionMlSummary {
+  prob_3m?: number | null;
+  prob_6m?: number | null;
+  prob_12m?: number | null;
+  signal?: string | null;
+  signal_label?: string | null;
+  decision_threshold_6m?: {
+    threshold_pct?: number;
+    moderate_floor_pct?: number;
+    selection?: string | null;
+    precision?: number | null;
+    recall?: number | null;
+    f1?: number | null;
+  } | null;
 }
 
 interface ScorecardData {
@@ -37,6 +58,8 @@ interface ScorecardData {
   composite_sparkline: number[];
   assessed_at: string;
   elapsed_ms: number;
+  // Phase 3.4 (display-only — not weighted into composite)
+  recession_ml?: RecessionMlSummary | null;
 }
 
 // ──────────────────────────────────────────────
@@ -50,44 +73,73 @@ const PILLAR_ICONS: Record<string, any> = {
   credit: BarChart3,
   volatility: Activity,
   geopolitical: Globe,
+  housing: Home,  // Phase 3.1
 };
 
 const PILLAR_METHODOLOGY: Record<string, { weight: string; description: string; inputs: string[]; scale: string }> = {
   inflation: {
-    weight: '20%',
-    description: 'Measures price pressure across consumer and producer prices. Higher scores signal purchasing power erosion and potential Fed tightening.',
-    inputs: ['CPI Year-over-Year', 'CPI Trend (accelerating/stable/decelerating)', 'Core PCE Year-over-Year'],
+    weight: '18%',
+    description: 'Measures price pressure across consumer and producer prices, anchored against market-implied long-term expectations. Higher scores signal purchasing power erosion and potential Fed tightening.',
+    inputs: [
+      'CPI Year-over-Year (35%)',
+      'CPI MoM momentum (15%)',
+      'Core PCE Year-over-Year (15%)',
+      'PPI Year-over-Year (15%) — pipeline pressure',
+      '5y5y Forward Inflation T5YIFR (20%) — market expectations',
+    ],
     scale: '0 at 1.5% CPI, 50 at 3.5%, 100 at 6.0%+',
   },
   labor: {
-    weight: '20%',
-    description: 'Tracks employment health through recession indicators and payroll momentum. Rising scores suggest weakening job market conditions.',
-    inputs: ['Sahm Rule (recession trigger at 0.50)', 'Unemployment Rate', 'Initial Jobless Claims', 'Nonfarm Payrolls MoM change'],
+    weight: '18%',
+    description: 'Tracks employment health through recession indicators, payroll momentum, and labor demand. Rising scores suggest weakening job market conditions.',
+    inputs: [
+      'Sahm Rule trigger at 0.50 (30%)',
+      'Unemployment rate (20%)',
+      'Initial jobless claims (20%)',
+      'Nonfarm payrolls MoM (10%)',
+      'JOLTS openings YoY (10%) — labor demand',
+      'JOLTS quits rate (10%) — worker confidence',
+    ],
     scale: '0 at full employment, 50 at emerging stress, 100 at recessionary',
   },
   yield_curve: {
-    weight: '15%',
+    weight: '14%',
     description: 'Monitors the Treasury yield curve shape and slope. Inversion historically precedes recessions by 12-18 months.',
-    inputs: ['10Y-2Y Spread', 'Curve Shape (steep/normal/flat/inverted)', 'Steepening/Flattening Trend'],
+    inputs: ['10Y-2Y spread (50%)', 'Curve shape — steep/normal/flat/inverted (25%)', 'Steepening/flattening trend (25%)'],
     scale: '0 at steep (+2%), 50 at flat, 100 at deeply inverted',
   },
   credit: {
-    weight: '15%',
+    weight: '14%',
     description: 'Assesses corporate bond market stress through investment-grade and high-yield spreads. Widening spreads signal deteriorating credit conditions.',
-    inputs: ['Credit Stress Level', 'IG OAS (Option-Adjusted Spread)', 'HY OAS'],
+    inputs: ['Credit stress level (40%)', 'IG OAS (30%)', 'HY OAS (30%)'],
     scale: '0 at tight spreads, 50 at normal, 100 at crisis-level widening',
   },
   volatility: {
-    weight: '15%',
+    weight: '12%',
     description: 'Gauges market fear via the VIX index. Sustained elevation above 30 indicates significant stress; spikes above 40 signal panic.',
-    inputs: ['VIX Level', 'VIX 1-Day Percentage Change'],
+    inputs: ['VIX level', 'VIX 1-day percentage change (spike bonus)'],
     scale: '<15 complacent, 15-25 normal, 25-35 elevated, 35+ crisis',
   },
   geopolitical: {
-    weight: '15%',
-    description: 'Uses market-based proxies for geopolitical risk rather than headline sentiment. Oil spikes, gold surges, and EM currency stress reveal real capital flows reacting to geopolitical events.',
-    inputs: ['Crude Oil Price & Spike', 'Gold 1-Day Move (safe-haven demand)', 'EM FX Stress (capital flight)', 'Geopolitical News Count (tiebreaker)'],
-    scale: 'Oil >$100 elevated, gold surge >2% stress, EM FX decline >1% concern',
+    weight: '12%',
+    description: 'Uses market-based proxies for geopolitical risk rather than headline sentiment. Oil spikes, gold surges, and EM currency stress reveal real capital flows. EM FX uses a 20-day z-score, not a single-day move.',
+    inputs: [
+      'Crude oil level + 1d spike (35%)',
+      'Gold 1d move — safe-haven demand (20%)',
+      'EM FX 20-day z-score (25%) — capital flight under stress',
+      'Geopolitical news count (20%, tiebreaker)',
+    ],
+    scale: 'Oil >$100 elevated, gold surge >2% stress, EM z<-1.5 severe',
+  },
+  housing: {
+    weight: '12%',
+    description: 'Housing is one of the leadiest cyclical signals — permits and starts typically turn 6-12 months ahead of broader weakness. YoY drops of 15%+ have historically preceded recessions.',
+    inputs: [
+      'Housing starts YoY (50%)',
+      'Building permits YoY (30%)',
+      'Starts 6mo / 12mo MA crossover (20%) — accelerating decline',
+    ],
+    scale: '0 at +30% YoY expansion, 50 at +10% to -10%, 100 at -10% YoY contraction',
   },
 };
 
@@ -245,10 +297,31 @@ const StatusBadge: React.FC<{ status: string }> = ({ status }) => {
 };
 
 // ──────────────────────────────────────────────
-// Freshness Dot
+// Freshness Dot (Phase 3.7: prefer server-computed badge)
 // ──────────────────────────────────────────────
 
-const FreshnessDot: React.FC<{ date: string | null }> = ({ date }) => {
+const FreshnessDot: React.FC<{
+  date: string | null;
+  freshness?: { age_days: number | null; level: string; label: string };
+}> = ({ date, freshness }) => {
+  // Prefer the server-computed freshness badge (Phase 3.7) so client and
+  // server agree on the level/label boundaries.
+  if (freshness) {
+    const colorByLevel: Record<string, string> = {
+      fresh: 'bg-positive',
+      aging: 'bg-warning',
+      stale: 'bg-critical',
+      unknown: 'bg-terminal-text-dim',
+    };
+    return (
+      <span className="flex items-center gap-1.5" title={date ? `Data as of ${date}` : 'No data date'}>
+        <span className={`w-2 h-2 rounded-full ${colorByLevel[freshness.level] || 'bg-terminal-text-dim'}`} />
+        <span className="text-[10px] text-terminal-text-dim">{freshness.label}</span>
+      </span>
+    );
+  }
+
+  // Legacy client-side computation for old API responses without `freshness`.
   if (!date) return <span className="w-2 h-2 rounded-full bg-terminal-text-dim" title="No data" />;
 
   const now = new Date();
@@ -270,6 +343,189 @@ const FreshnessDot: React.FC<{ date: string | null }> = ({ date }) => {
       <span className={`w-2 h-2 rounded-full ${color}`} />
       <span className="text-[10px] text-terminal-text-dim">{label}</span>
     </span>
+  );
+};
+
+// ──────────────────────────────────────────────
+// Backtest Panel (Phase 4.3)
+// ──────────────────────────────────────────────
+
+interface BacktestRow {
+  cutoff: number;
+  precision: number;
+  recall: number;
+  f1: number;
+  n_positive_predictions: number;
+  n_true_positives: number;
+  n_total: number;
+}
+interface BacktestData {
+  cutoffs: BacktestRow[];
+  n_snapshots: number;
+  n_positive_outcomes: number;
+  lookahead_days: number;
+  note?: string;
+}
+
+const BacktestPanel: React.FC = () => {
+  const [data, setData] = useState<BacktestData | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const load = useCallback(async () => {
+    try {
+      setLoading(true);
+      const res = await fetch(`${API_URL}/api/intelligence/risk-scorecard/backtest`);
+      if (!res.ok) throw new Error('Failed to fetch backtest');
+      setData(await res.json());
+    } catch {
+      // swallow — panel hides when data is empty
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (expanded && !data) load();
+  }, [expanded, data, load]);
+
+  return (
+    <div className="bg-terminal-panel border border-terminal-border rounded-lg overflow-hidden mb-4">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between p-4 hover:bg-terminal-surface/50 transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <BarChart3 size={14} className="text-blue-400" />
+          <span className="text-[10px] text-terminal-text-dim font-mono uppercase tracking-wider">
+            Composite Cutoff Back-test vs NBER
+          </span>
+        </div>
+        <ChevronDown className={`w-4 h-4 text-terminal-text-dim transition-transform ${expanded ? 'rotate-180' : ''}`} />
+      </button>
+      {expanded && (
+        <div className="px-4 pb-4 border-t border-terminal-border pt-3">
+          {loading && <p className="text-[11px] text-terminal-text-dim italic">Running back-test...</p>}
+          {!loading && data?.note && (
+            <p className="text-[11px] text-terminal-text-dim italic">{data.note}</p>
+          )}
+          {!loading && data && data.cutoffs.length > 0 && (
+            <>
+              <div className="text-[11px] text-terminal-text-dim mb-3">
+                Replays the composite over {data.n_snapshots} historical journal snapshots.
+                A snapshot is a "true positive" when an NBER recession month falls within {data.lookahead_days} days afterward.
+                {' '}<span className="text-terminal-text">{data.n_positive_outcomes}</span> snapshots had a recession outcome.
+              </div>
+              <div className="overflow-x-auto">
+                <table className="w-full text-xs font-mono">
+                  <thead>
+                    <tr className="text-terminal-text-dim border-b border-terminal-border/50">
+                      <th className="text-left py-1 pr-2">Cutoff</th>
+                      <th className="text-right py-1 px-2">Precision</th>
+                      <th className="text-right py-1 px-2">Recall</th>
+                      <th className="text-right py-1 px-2">F1</th>
+                      <th className="text-right py-1 px-2">Pos Pred</th>
+                      <th className="text-right py-1 pl-2">True Pos</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {data.cutoffs.map(row => (
+                      <tr key={row.cutoff} className="border-t border-terminal-border/30">
+                        <td className="py-1.5 pr-2 text-terminal-text">&ge; {row.cutoff.toFixed(0)}</td>
+                        <td className="py-1.5 px-2 text-right text-terminal-text">{(row.precision * 100).toFixed(0)}%</td>
+                        <td className="py-1.5 px-2 text-right text-terminal-text">{(row.recall * 100).toFixed(0)}%</td>
+                        <td className="py-1.5 px-2 text-right text-terminal-text">{row.f1.toFixed(2)}</td>
+                        <td className="py-1.5 px-2 text-right text-terminal-text-dim">{row.n_positive_predictions} / {row.n_total}</td>
+                        <td className="py-1.5 pl-2 text-right text-terminal-text-dim">{row.n_true_positives}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <p className="text-[10px] text-terminal-text-dim mt-3">
+                If precision at the published 67 cutoff is below ~50%, the band may be too aggressive (false-alarm-prone).
+                If recall is below ~30%, it may be too conservative (missing real recessions).
+              </p>
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+};
+
+// ──────────────────────────────────────────────
+// Pillar Deltas (Phase 3.6)
+// ──────────────────────────────────────────────
+
+const DeltaRow: React.FC<{ deltas?: { d1: number | null; w1: number | null; m1: number | null } }> = ({ deltas }) => {
+  if (!deltas) return null;
+  const renderDelta = (label: string, value: number | null) => {
+    if (value === null || value === undefined) {
+      return (
+        <div className="flex flex-col items-center text-terminal-text-dim">
+          <span className="text-[9px] font-mono uppercase tracking-wider">{label}</span>
+          <span className="text-[10px] font-mono">—</span>
+        </div>
+      );
+    }
+    // Risk pillars: positive delta = risk up = bad. Color accordingly.
+    const colorClass = value > 1 ? 'text-critical' : value < -1 ? 'text-positive' : 'text-terminal-text-dim';
+    const sign = value > 0 ? '+' : '';
+    return (
+      <div className="flex flex-col items-center">
+        <span className="text-[9px] font-mono uppercase tracking-wider text-terminal-text-dim">{label}</span>
+        <span className={`text-[10px] font-mono font-bold ${colorClass}`}>
+          {sign}{value.toFixed(1)}
+        </span>
+      </div>
+    );
+  };
+  return (
+    <div className="flex items-center justify-around gap-2 pt-2 mt-2 border-t border-terminal-border/30">
+      {renderDelta('1D', deltas.d1)}
+      {renderDelta('1W', deltas.w1)}
+      {renderDelta('1M', deltas.m1)}
+    </div>
+  );
+};
+
+// ──────────────────────────────────────────────
+// Recession ML Banner (Phase 3.4 — display-only, not weighted)
+// ──────────────────────────────────────────────
+
+const RecessionMlBanner: React.FC<{ ml?: RecessionMlSummary | null }> = ({ ml }) => {
+  if (!ml || ml.prob_6m == null) return null;
+  const prob6 = ml.prob_6m;
+  const colorClass = ml.signal === 'high' ? 'text-critical border-critical/40 bg-critical/5'
+    : ml.signal === 'moderate' ? 'text-warning border-warning/40 bg-warning/5'
+    : 'text-positive border-positive/40 bg-positive/5';
+
+  return (
+    <div className={`mb-4 px-4 py-3 rounded-lg border ${colorClass} flex flex-wrap items-center gap-x-4 gap-y-1`}>
+      <div className="flex items-center gap-2">
+        <Brain size={14} />
+        <span className="text-[11px] font-mono uppercase tracking-wider">Recession ML — 6mo Probability</span>
+      </div>
+      <span className="text-lg font-mono font-bold">{prob6.toFixed(1)}%</span>
+      {ml.signal_label && (
+        <span className="text-xs font-medium">{ml.signal_label} signal</span>
+      )}
+      {ml.prob_3m != null && ml.prob_12m != null && (
+        <span className="text-[10px] font-mono text-terminal-text-dim">
+          3mo {ml.prob_3m.toFixed(0)}% &middot; 12mo {ml.prob_12m.toFixed(0)}%
+        </span>
+      )}
+      {ml.decision_threshold_6m?.threshold_pct != null && (
+        <span className="text-[10px] font-mono text-terminal-text-dim ml-auto"
+              title={`Threshold selected by ${ml.decision_threshold_6m.selection || 'default'}`}>
+          Elevated &ge; {ml.decision_threshold_6m.threshold_pct.toFixed(0)}%
+        </span>
+      )}
+      <div className="w-full text-[10px] text-terminal-text-dim">
+        Display-only signal from the dedicated ML ensemble. Not weighted into the composite (signals overlap with the pillars below).
+      </div>
+    </div>
   );
 };
 
@@ -362,7 +618,7 @@ export const RiskScorecard: React.FC = () => {
           <Shield className="w-6 h-6 text-neutral" />
           <div>
             <h1 className="text-2xl font-bold text-terminal-text">Macro Risk Scorecard</h1>
-            <p className="text-xs text-terminal-text-dim">Weighted composite across 6 market-driven risk pillars</p>
+            <p className="text-xs text-terminal-text-dim">Weighted composite across 7 market-driven risk pillars</p>
           </div>
         </div>
         <div className="flex items-center gap-3">
@@ -400,8 +656,8 @@ export const RiskScorecard: React.FC = () => {
           </h3>
           <div className="space-y-3 text-xs text-terminal-text-dim leading-relaxed">
             <p>
-              The composite score is a <span className="text-terminal-text font-medium">weighted average</span> of 6 independent risk pillars, each scored 0-100 based on real market data and economic indicators.
-              No AI or sentiment analysis is used — every score is derived from quantitative thresholds applied to observable data.
+              The composite score is a <span className="text-terminal-text font-medium">weighted average</span> of 7 independent risk pillars, each scored 0-100 based on real market data and economic indicators.
+              No AI or sentiment analysis is used — every score is derived from quantitative thresholds applied to observable data. The Recession ML banner above the composite is a separate model surfaced for context, not weighted into the composite.
             </p>
             <div className="flex flex-wrap gap-4 py-2">
               <div className="flex items-center gap-2">
@@ -425,6 +681,14 @@ export const RiskScorecard: React.FC = () => {
           </div>
         </div>
       )}
+
+      {/* Recession Probability (canonical ML ensemble) */}
+      <div className="mb-6">
+        <RecessionProbabilityCard />
+      </div>
+
+      {/* Phase 3.4: ML probability summary banner — display-only context */}
+      <RecessionMlBanner ml={data.recession_ml} />
 
       {/* Composite Score Hero Section */}
       <div className="bg-terminal-panel border border-terminal-border rounded-lg p-6 mb-6">
@@ -536,6 +800,9 @@ export const RiskScorecard: React.FC = () => {
                   <TrendIndicator trend={pillar.trend} />
                   <MiniSparkline data={pillar.sparkline} color={pillar.color} />
                 </div>
+
+                {/* 1D / 1W / 1M deltas (Phase 3.6) */}
+                <DeltaRow deltas={pillar.deltas} />
               </div>
 
               {/* Components */}
@@ -554,7 +821,7 @@ export const RiskScorecard: React.FC = () => {
               {/* Methodology Toggle + Freshness */}
               <div className="px-4 pb-3 pt-1 border-t border-terminal-border/30">
                 <div className="flex items-center justify-between">
-                  <FreshnessDot date={pillar.data_freshness} />
+                  <FreshnessDot date={pillar.data_freshness} freshness={pillar.freshness} />
                   {methodology && (
                     <button
                       onClick={() => setExpandedPillar(isExpanded ? null : pillar.id)}
@@ -588,8 +855,13 @@ export const RiskScorecard: React.FC = () => {
         })}
       </div>
 
+      {/* Phase 4.3: Composite cutoff back-test (collapsible) */}
+      <div className="mt-6">
+        <BacktestPanel />
+      </div>
+
       {/* Footer */}
-      <div className="mt-6 text-center text-[10px] text-terminal-text-dim">
+      <div className="mt-4 text-center text-[10px] text-terminal-text-dim">
         Last assessed: {new Date(data.assessed_at).toLocaleString('en-US', { timeZone: 'America/New_York' })} ET
       </div>
     </div>

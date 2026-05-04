@@ -349,8 +349,11 @@ class RiskAlert(Base):
     acknowledged = Column(Boolean, default=False)
     acknowledged_at = Column(DateTime)
     
-    # Deduplication
-    alert_hash = Column(String(64), index=True)
+    # Deduplication. UNIQUE so that a race between the `_existing_alert`
+    # check and the insert in alerts._emit can never produce a silent
+    # duplicate; the second writer raises IntegrityError, which _emit
+    # treats as "dedup-resolved, no-op" rather than a real failure.
+    alert_hash = Column(String(64), unique=True, index=True)
     
     # Metadata
     created_at = Column(DateTime, default=datetime.utcnow)
@@ -562,6 +565,13 @@ class AIMarketJournal(Base):
     # News themes snapshot
     news_themes = Column(JSON)  # {top_categories: {...}, top_leaders: [...], severity_counts: {...}}
 
+    # Per-pillar scorecard scores at time of entry (Phase 1 §1.4).
+    # Structure: {composite, composite_color, composite_trend, pillars: {<id>: {score, color, components, ...}}}
+    # The scorecard sparkline reads these directly so historical values match
+    # live multi-component scoring (the old reconstruction used a simplified
+    # single-component formula and drifted from the live pillar value).
+    pillar_scores_snapshot = Column(JSON)
+
     created_at = Column(DateTime, default=datetime.utcnow)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
@@ -574,4 +584,5 @@ class AIMarketJournal(Base):
             'narrative_summary': self.narrative_summary,
             'indicator_snapshot': self.indicator_snapshot or {},
             'news_themes': self.news_themes or {},
+            'pillar_scores_snapshot': self.pillar_scores_snapshot or {},
         }

@@ -15,22 +15,62 @@ from loguru import logger
 from modules.utils.timezone import get_current_time
 
 
-# Module-level cache: {cache_key: (result, timestamp)}
-_analytics_cache: Dict[str, tuple] = {}
-_CACHE_TTL_MINUTES = 5
+# Module-level cache for context + analytics results (Phase 2 §2.7 perf).
+# `gather_market_context` is called by every dashboard, scorecard, and
+# chat request — at ~3 page loads/min across multiple endpoints + tabs
+# that's tens of redundant FRED-touching calls a minute. A 60-second TTL
+# brings repeat calls down to ~1/min while staleness stays invisible at
+# the dashboard's daily-grained view.
+_context_cache: Dict[str, Any] = {"data": None, "timestamp": 0.0}
+# Single-slot analytics cache keyed by id(context). We don't allow more
+# than one entry — when gather_market_context returns a fresh context
+# (TTL expired), the previous analytics entry is replaced. Multi-entry
+# caching previously risked Python id() reuse: the GC could reclaim the
+# old context's id, a fresh dict could land at the same address, and
+# stale analytics would be served. Now: at most one entry, always
+# matching the currently-cached context.
+#
+# Concurrency note: this cache is not lock-protected. Under uvicorn's
+# default async worker model (single thread, cooperative scheduling),
+# `compute_analytics` runs to completion without interleaving — the
+# slot is consistent. Multi-process deployments (`--workers > 1`) get
+# per-process caches and no cross-process race exists. Only a threaded
+# WSGI deployment (e.g. gunicorn threaded workers) could observe
+# overlapping `compute_analytics` calls; in that mode two writers may
+# both compute the same context and the later writer's result wins,
+# which is harmless (they computed the same input). Add a `threading.
+# Lock` if the deployment changes to threaded workers.
+_analytics_cache: Dict[str, Any] = {"context_id": None, "data": None}
+_CACHE_TTL_SECONDS = 60
 
 
 def gather_market_context(db: Session) -> Dict[str, Any]:
     """
     Gather all raw market data (indicators, yields, FX, credit, news, calendar).
 
-    Returns a context dict consumable by compute_analytics().
-    Delegates to AIMarketNarrative's data-gathering methods.
+    Returns a context dict consumable by compute_analytics(). A 60-second
+    module-level cache absorbs the multi-endpoint stampede that occurs
+    when dashboard / scorecard / chat all fetch within the same poll
+    cycle. Delegates to AIMarketNarrative's data-gathering methods on
+    cache miss.
     """
     from .ai_narrative import AIMarketNarrative
 
+    now = time.time()
+    cached = _context_cache.get("data")
+    cached_at = _context_cache.get("timestamp", 0.0)
+    if cached is not None and (now - cached_at) < _CACHE_TTL_SECONDS:
+        return cached
+
     narrator = AIMarketNarrative(db)
-    return narrator._gather_context()
+    context = narrator._gather_context()
+    _context_cache["data"] = context
+    _context_cache["timestamp"] = now
+    # Invalidate the analytics memo whenever the context changes so a
+    # stale (id-aliased) entry can never be returned for a fresh context.
+    _analytics_cache["context_id"] = None
+    _analytics_cache["data"] = None
+    return context
 
 
 def compute_analytics(context: Dict[str, Any], db: Optional[Session] = None) -> Dict[str, Any]:
@@ -41,8 +81,19 @@ def compute_analytics(context: Dict[str, Any], db: Optional[Session] = None) -> 
     yields (shape, WoW/MoM changes, breakevens), fx (DM/EM classification,
     USD direction), credit (stress levels), news (severity aggregation,
     priority headlines), regime (composite assessment).
+
+    Memoized per-context-object: if the caller is reusing the cached
+    context returned from `gather_market_context`, the analytics result
+    is reused too — saving the per-request derivation cost.
     """
     from .ai_narrative import AIMarketNarrative
+
+    cache_key = id(context)
+    if (
+        _analytics_cache["context_id"] == cache_key
+        and _analytics_cache["data"] is not None
+    ):
+        return _analytics_cache["data"]
 
     # Create a narrator just to access its analytics methods
     # We pass db=None since analytics methods don't use self.db
@@ -52,7 +103,10 @@ def compute_analytics(context: Dict[str, Any], db: Optional[Session] = None) -> 
     narrator._client = None
     narrator._last_narrative = None
 
-    return narrator._compute_analytics(context)
+    result = narrator._compute_analytics(context)
+    _analytics_cache["context_id"] = cache_key
+    _analytics_cache["data"] = result
+    return result
 
 
 def _sanitize_for_json(obj):

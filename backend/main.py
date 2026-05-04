@@ -58,6 +58,17 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"Database initialization failed: {e}")
     
+    # Audit scorecard inputs — warns when required FRED series haven't
+    # been backfilled, so the scorecard pillars don't silently degrade.
+    try:
+        from modules.data_storage.database import get_db_context
+        from modules.risk_scorecard.health import audit_scorecard_inputs
+
+        with get_db_context() as audit_db:
+            audit_scorecard_inputs(audit_db)
+    except Exception as e:
+        logger.debug(f"Scorecard input audit skipped: {e}")
+
     # Start background scheduler
     try:
         start_scheduler()

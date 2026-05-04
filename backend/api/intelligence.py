@@ -5,6 +5,8 @@ Provides endpoints for the AI-powered market intelligence system:
 conversational chat, regime detection, playbook matching, and correlation tracking.
 """
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 from typing import Optional
@@ -177,7 +179,7 @@ async def get_correlations():
 
 @router.get("/risk-scorecard")
 async def get_risk_scorecard(db: Session = Depends(get_db)):
-    """Get composite macro risk scorecard with 6 pillar breakdowns."""
+    """Get composite macro risk scorecard with 7 pillar breakdowns."""
     try:
         from modules.risk_scorecard import RiskScorecard
 
@@ -186,6 +188,25 @@ async def get_risk_scorecard(db: Session = Depends(get_db)):
 
     except Exception as e:
         logger.error(f"Risk scorecard error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/risk-scorecard/backtest")
+async def get_risk_scorecard_backtest(
+    lookahead_days: int = Query(365, ge=30, le=730),
+    db: Session = Depends(get_db),
+):
+    """
+    Phase 4.3: Back-test composite cutoff thresholds (50/60/67) against NBER
+    recession dates within `lookahead_days` after each historical journal
+    snapshot. Validates the published green/yellow/red bands.
+    """
+    try:
+        from modules.risk_scorecard.backtest import backtest_composite_cutoff
+
+        return backtest_composite_cutoff(db, lookahead_days=lookahead_days)
+    except Exception as e:
+        logger.error(f"Risk scorecard backtest error: {e}", exc_info=True)
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -420,3 +441,120 @@ async def get_scenario_presets():
     """Get preset scenario options."""
     from modules.scenario_simulator import PRESET_SCENARIOS
     return {"presets": PRESET_SCENARIOS}
+
+
+# ──────────────────────────────────────────────
+# Recession Model Endpoints
+# ──────────────────────────────────────────────
+
+@router.get("/recession/probability")
+async def get_recession_probability(db: Session = Depends(get_db)):
+    """Get current recession probabilities from the ML model."""
+    try:
+        from modules.recession_model.predictor import RecessionPredictor
+
+        predictor = RecessionPredictor(db)
+        return predictor.get_current_probability()
+
+    except Exception as e:
+        logger.error(f"Recession probability error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/recession/history")
+async def get_recession_history():
+    """Get historical recession probability time series for charting."""
+    try:
+        from modules.recession_model.predictor import RecessionPredictor
+        from modules.data_storage.database import get_db_context
+
+        with get_db_context() as db:
+            predictor = RecessionPredictor(db)
+            return predictor.get_historical_probabilities()
+
+    except Exception as e:
+        logger.error(f"Recession history error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/recession/model-info")
+async def get_recession_model_info():
+    """Get model metadata, metrics, and feature importances."""
+    try:
+        from modules.recession_model import RecessionModel
+
+        model = RecessionModel()
+        loaded = model.load()
+
+        if not loaded:
+            return {"trained": False}
+
+        return model.get_model_info()
+
+    except Exception as e:
+        logger.error(f"Recession model info error: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Shared training-state coordinator. Both this endpoint and the
+# scheduler's monthly/drift-triggered retrain go through it so concurrent
+# trains cannot interleave their writes to the same artifact files.
+from modules.recession_model import training_state as _ts
+
+
+def _run_training():
+    """Run model training synchronously (called in background thread).
+
+    Caller MUST have already acquired training_state. Updates progress
+    along the way and marks completion at the end.
+    """
+    from modules.recession_model import RecessionModel
+
+    _ts.update_progress("Fetching FRED data...")
+    model = RecessionModel()
+    result = model.train()
+    _ts.mark_completed(result)
+    return result
+
+
+@router.post("/recession/train")
+async def train_recession_model():
+    """Kick off async recession model training. Returns immediately."""
+    if not _ts.acquire(owner="ui"):
+        return {"status": "already_training", "message": "Training is already in progress"}
+
+    async def _train_background():
+        try:
+            await asyncio.to_thread(_run_training)
+        except Exception as e:
+            logger.error(f"Recession model training error: {e}", exc_info=True)
+            _ts.mark_failed(str(e))
+
+    asyncio.create_task(_train_background())
+
+    return {"status": "started", "message": "Training started in background"}
+
+
+@router.get("/recession/training-status")
+async def get_training_status():
+    """Poll training progress."""
+    import time
+
+    snap = _ts.snapshot()
+    response = {
+        "status": snap["status"],
+        "progress": snap["progress"],
+        "owner": snap.get("owner"),
+    }
+
+    if snap["started_at"]:
+        elapsed = ((snap.get("completed_at") or time.time()) - snap["started_at"])
+        response["elapsed_seconds"] = round(elapsed, 1)
+
+    if snap["status"] == "completed":
+        response["result"] = snap["result"]
+
+    if snap["status"] == "failed":
+        response["error"] = snap["error"]
+
+    return response
